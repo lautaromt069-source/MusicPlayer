@@ -1,0 +1,26 @@
+name: Build L.E.B-M APK
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          if [ -f MusicPlayer.zip ]; then unzip -q -o MusicPlayer.zip; fi
+          D=$(dirname "$(find . -name settings.gradle -not -path './.git/*' | head -n1)")
+          echo "PROJECT=$D" >> $GITHUB_ENV
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - run: gradle assembleDebug
+        working-directory: ${{ env.PROJECT }}
+      - run: cp "$PROJECT/app/build/outputs/apk/debug/app-debug.apk" L.E.B-M.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: L.E.B-M
+          path: L.E.B-M.apk
