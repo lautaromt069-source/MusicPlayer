@@ -32,18 +32,33 @@ jobs:
           RES_DIR="$PROJECT/app/src/main/res"
           if [ ! -f "$RES_DIR/mipmap-mdpi/ic_launcher.png" ]; then
             python3 -c '
-          from PIL import Image, ImageDraw
-          import os
+          import os, struct, zlib
+
+          def make_png(w, h, r, g, b):
+              def chunk(tag, data):
+                  return (
+                      struct.pack("!I", len(data))
+                      + tag
+                      + data
+                      + struct.pack("!I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+                  )
+              row = bytes([0] + [r, g, b, 255] * w)
+              raw = row * h
+              ihdr = struct.pack("!IIBBBBB", w, h, 8, 6, 0, 0, 0)
+              return (
+                  b"\x89PNG\r\n\x1a\n"
+                  + chunk(b"IHDR", ihdr)
+                  + chunk(b"IDAT", zlib.compress(raw, level=9))
+                  + chunk(b"IEND", b"")
+              )
+
           sizes = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
           for d, s in sizes.items():
               p = f"'"$RES_DIR"'/mipmap-{d}"
               os.makedirs(p, exist_ok=True)
-              img = Image.new("RGBA", (s, s), (18, 18, 28, 255))
-              draw = ImageDraw.Draw(img)
-              pad = s // 6
-              draw.ellipse([pad, pad, s - pad, s - pad], fill=(0, 200, 180, 255))
-              img.save(f"{p}/ic_launcher.png")
-              img.save(f"{p}/ic_launcher_round.png")
+              for name in ("ic_launcher.png", "ic_launcher_round.png"):
+                  with open(f"{p}/{name}", "wb") as f:
+                      f.write(make_png(s, s, 0, 190, 175))
           '
           fi
 
