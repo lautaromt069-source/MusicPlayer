@@ -19,21 +19,44 @@ jobs:
           fi
           echo "PROJECT=$D" >> $GITHUB_ENV
 
-      - name: Set version 1.3 and app name
+      - name: Force version 1.3
         run: |
-          GRADLE_FILE=$(find "$PROJECT/app" -maxdepth 1 \( -name "build.gradle" -o -name "build.gradle.kts" \) | head -n1)
-          if [ -n "$GRADLE_FILE" ]; then
-            sed -i 's/versionName "[^"]*"/versionName "1.3"/g; s/versionName = "[^"]*"/versionName = "1.3"/g' "$GRADLE_FILE"
-            sed -i 's/versionCode [0-9]\+/versionCode 13/g; s/versionCode = [0-9]\+/versionCode = 13/g' "$GRADLE_FILE"
-          fi
+          python3 - << 'EOF'
+          import glob, os, re
+
+          root = os.environ["PROJECT"]
+          patterns = ["**/build.gradle", "**/build.gradle.kts", "**/gradle.properties", "**/libs.versions.toml"]
+          files = []
+          for pat in patterns:
+              files.extend(glob.glob(os.path.join(root, pat), recursive=True))
+
+          for path in sorted(set(files)):
+              if "/build/" in path or "\\build\\" in path:
+                  continue
+              with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                  text = f.read()
+
+              new_text = text
+              new_text = re.sub(r'(versionName\s*=?\s*["\'])([^"\']*)(["\'])', r'\g<1>1.3\g<3>', new_text)
+              new_text = re.sub(r'(\bversionCode\s*=?\s*)(\d+)', r'\g<1>13', new_text)
+              new_text = re.sub(r'(VERSION_NAME\s*=\s*["\']?)([^"\'\s]+)(["\']?)', r'\g<1>1.3\g<3>', new_text)
+              new_text = re.sub(r'(VERSION_CODE\s*=\s*)(\d+)', r'\g<1>13', new_text)
+
+              if new_text != text:
+                  with open(path, "w", encoding="utf-8") as f:
+                      f.write(new_text)
+                  print("ACTUALIZADO A 1.3:", path)
+          EOF
+          grep -rnE "versionName|versionCode|VERSION_NAME|VERSION_CODE" "$PROJECT" --exclude-dir=build || true
 
       - name: Generate launcher icon and L.E.B-M logo
         run: |
-          RES_DIR="$PROJECT/app/src/main/res"
-          python3 -c '
-          import os, struct, zlib, math
+          python3 - << 'EOF'
+          import math, os, struct, zlib
 
-          def make_icon_png(size, mode="launcher"):
+          res_dir = os.path.join(os.environ["PROJECT"], "app", "src", "main", "res")
+
+          def make_png(size, is_logo=False):
               def chunk(tag, data):
                   return (
                       struct.pack("!I", len(data))
@@ -41,6 +64,7 @@ jobs:
                       + data
                       + struct.pack("!I", zlib.crc32(tag + data) & 0xFFFFFFFF)
                   )
+
               cx, cy = (size - 1) / 2.0, (size - 1) / 2.0
               r_outer = size * 0.44
               r_inner = size * 0.22
@@ -48,10 +72,8 @@ jobs:
               for y in range(size):
                   row = bytearray([0])
                   for x in range(size):
-                      dx, dy = x - cx, y - cy
-                      dist = math.hypot(dx, dy)
-                      if mode == "launcher":
-                          # Fondo oscuro con anillo esmeralda/turquesa y núcleo luminoso
+                      dist = math.hypot(x - cx, y - cy)
+                      if not is_logo:
                           if dist <= r_outer:
                               if dist <= r_inner:
                                   r, g, b, a = 16, 22, 34, 255
@@ -64,7 +86,6 @@ jobs:
                           else:
                               r, g, b, a = 12, 16, 24, 255
                       else:
-                          # Logo L.E.B-M: círculo degradado naturaleza + centro brillante
                           if dist <= r_outer:
                               t = dist / max(1.0, r_outer)
                               r = int(20 + 40 * t)
@@ -73,8 +94,14 @@ jobs:
                               a = 255
                           else:
                               r, g, b, a = 0, 0, 0, 0
-                      row.extend((max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b)), max(0, min(255, a))))
+                      row.extend((
+                          max(0, min(255, r)),
+                          max(0, min(255, g)),
+                          max(0, min(255, b)),
+                          max(0, min(255, a)),
+                      ))
                   rows.append(bytes(row))
+
               raw = b"".join(rows)
               ihdr = struct.pack("!IIBBBBB", size, size, 8, 6, 0, 0, 0)
               return (
@@ -85,20 +112,20 @@ jobs:
               )
 
           sizes = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
-          for d, s in sizes.items():
-              p = f"'"$RES_DIR"'/mipmap-{d}"
-              os.makedirs(p, exist_ok=True)
-              if not os.path.exists(f"{p}/ic_launcher.png"):
-                  with open(f"{p}/ic_launcher.png", "wb") as f:
-                      f.write(make_icon_png(s, "launcher"))
-              if not os.path.exists(f"{p}/ic_launcher_round.png"):
-                  with open(f"{p}/ic_launcher_round.png", "wb") as f:
-                      f.write(make_icon_png(s, "launcher"))
+          for folder, px in sizes.items():
+              out_dir = os.path.join(res_dir, f"mipmap-{folder}")
+              os.makedirs(out_dir, exist_ok=True)
+              for fname in ("ic_launcher.png", "ic_launcher_round.png"):
+                  fpath = os.path.join(out_dir, fname)
+                  if not os.path.exists(fpath):
+                      with open(fpath, "wb") as f:
+                          f.write(make_png(px, is_logo=False))
 
-          os.makedirs(f"'"$RES_DIR"'/drawable", exist_ok=True)
-          with open(f"'"$RES_DIR"'/drawable/leb_m_logo.png", "wb") as f:
-              f.write(make_icon_png(256, "logo"))
-          '
+          drawable_dir = os.path.join(res_dir, "drawable")
+          os.makedirs(drawable_dir, exist_ok=True)
+          with open(os.path.join(drawable_dir, "leb_m_logo.png"), "wb") as f:
+              f.write(make_png(256, is_logo=True))
+          EOF
 
       - name: Ensure safe bilingual strings and credits
         run: |
