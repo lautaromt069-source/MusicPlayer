@@ -1,31 +1,69 @@
-name: Build L.E.B-M APK
+name: Build L.E.B-M v1.3 APK
+
 on: [push, workflow_dispatch]
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: |
+
+      - name: Locate Android project
+        run: |
           if [ -f MusicPlayer.zip ]; then
             mkdir -p leb_src
             unzip -q -o MusicPlayer.zip -d leb_src
-            D=$(dirname "$(find leb_src -name settings.gradle | head -n1)")
+            D=$(dirname "$(find leb_src -name settings.gradle -o -name settings.gradle.kts | head -n1)")
           else
-            D=$(dirname "$(find . -name settings.gradle -not -path './.git/*' | head -n1)")
+            D=$(dirname "$(find . \( -name settings.gradle -o -name settings.gradle.kts \) -not -path './.git/*' | head -n1)")
           fi
           echo "PROJECT=$D" >> $GITHUB_ENV
+
+      - name: Set version 1.3
+        run: |
+          GRADLE_FILE=$(find "$PROJECT/app" -maxdepth 1 \( -name "build.gradle" -o -name "build.gradle.kts" \) | head -n1)
+          if [ -n "$GRADLE_FILE" ]; then
+            sed -i 's/versionName "[^"]*"/versionName "1.3"/g; s/versionName = "[^"]*"/versionName = "1.3"/g' "$GRADLE_FILE"
+            sed -i 's/versionCode [0-9]\+/versionCode 13/g; s/versionCode = [0-9]\+/versionCode = 13/g' "$GRADLE_FILE"
+          fi
+
+      - name: Generate fallback launcher icon if missing
+        run: |
+          RES_DIR="$PROJECT/app/src/main/res"
+          if [ ! -f "$RES_DIR/mipmap-mdpi/ic_launcher.png" ]; then
+            python3 -c '
+          from PIL import Image, ImageDraw
+          import os
+          sizes = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
+          for d, s in sizes.items():
+              p = f"'"$RES_DIR"'/mipmap-{d}"
+              os.makedirs(p, exist_ok=True)
+              img = Image.new("RGBA", (s, s), (18, 18, 28, 255))
+              draw = ImageDraw.Draw(img)
+              pad = s // 6
+              draw.ellipse([pad, pad, s - pad, s - pad], fill=(0, 200, 180, 255))
+              img.save(f"{p}/ic_launcher.png")
+              img.save(f"{p}/ic_launcher_round.png")
+          '
+          fi
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
+
       - run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
+
       - run: gradle assembleDebug
         working-directory: ${{ env.PROJECT }}
-      - run: cp "$PROJECT/app/build/outputs/apk/debug/app-debug.apk" L.E.B-M.apk
+
+      - run: cp "$PROJECT/app/build/outputs/apk/debug/app-debug.apk" L.E.B-M-v1.3.apk
+
       - uses: actions/upload-artifact@v4
         with:
-          name: L.E.B-M
-          path: L.E.B-M.apk
+          name: L.E.B-M-v1.3
+          path: L.E.B-M-v1.3.apk
