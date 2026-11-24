@@ -38,13 +38,11 @@ jobs:
           done < <(
             find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
               -not -path './.git/*' \
-              -not -path '*/.gradle/*' \
-              | sort
+              -not -path '*/.gradle/*' | sort
           )
 
           if [ -z "$PROJECT" ]; then
-            echo "::error::No Android project found. The repository or MusicPlayer.zip must contain settings.gradle(.kts) and an app/ folder."
-            echo "Files found:"
+            echo "::error::No Android project found. Include settings.gradle(.kts) and an app/ folder."
             find . -maxdepth 5 -type f | head -100
             exit 1
           fi
@@ -52,7 +50,6 @@ jobs:
           PROJECT="$(cd "$PROJECT" && pwd)"
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
           echo "Android project: $PROJECT"
-          ls -la "$PROJECT"
           ls -la "$PROJECT/app"
 
       - name: Set up JDK 17
@@ -61,34 +58,27 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Install the Android SDK directly. This avoids the setup-android
-      # action that failed in the previous workflow run.
       - name: Install Android command-line tools
         shell: bash
         run: |
           set -euo pipefail
 
           SDK_ROOT="$HOME/android-sdk"
-          mkdir -p "$SDK_ROOT/cmdline-tools"
+          mkdir -p "$SDK_ROOT/cmdline-tools/latest"
 
           curl --fail --location --retry 3 \
             "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" \
             --output "$RUNNER_TEMP/android-command-line-tools.zip"
 
+          mkdir -p "$RUNNER_TEMP/android-tools"
           unzip -q "$RUNNER_TEMP/android-command-line-tools.zip" -d "$RUNNER_TEMP/android-tools"
-          mkdir -p "$SDK_ROOT/cmdline-tools/latest"
           cp -R "$RUNNER_TEMP/android-tools/cmdline-tools/." "$SDK_ROOT/cmdline-tools/latest/"
 
-          {
-            echo "ANDROID_HOME=$SDK_ROOT"
-            echo "ANDROID_SDK_ROOT=$SDK_ROOT"
-            echo "$SDK_ROOT/cmdline-tools/latest/bin"
-            echo "$SDK_ROOT/platform-tools"
-          } >> "$GITHUB_ENV"
-          {
-            echo "$SDK_ROOT/cmdline-tools/latest/bin"
-            echo "$SDK_ROOT/platform-tools"
-          } >> "$GITHUB_PATH"
+          # Environment variables go in GITHUB_ENV; executable search paths go in GITHUB_PATH.
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "$SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
 
           echo "Android SDK command-line tools installed."
 
@@ -98,12 +88,10 @@ jobs:
           set -euo pipefail
 
           yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
-
           sdkmanager --sdk_root="$ANDROID_HOME" --install \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0"
-
           sdkmanager --sdk_root="$ANDROID_HOME" --list_installed
 
       - name: Set up Gradle
@@ -115,7 +103,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           cd "$PROJECT"
           printf 'sdk.dir=%s\n' "$ANDROID_HOME" > local.properties
 
