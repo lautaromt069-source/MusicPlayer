@@ -44,6 +44,324 @@ jobs:
           ls -la "$PROJECT"
           ls -la "$PROJECT/app" || true
 
+      - name: Inject Pro, Anime AI & Dev features
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC_ROOT="${PROJECT}/app/src/main"
+          mkdir -p "${SRC_ROOT}/java/com/leb/profeatures" "${SRC_ROOT}/res/layout"
+
+          cat << 'EOF' > "${SRC_ROOT}/java/com/leb/profeatures/LebProManager.kt"
+          package com.leb.profeatures
+
+          import android.content.Context
+
+          enum class AnimeStyle(val displayName: String, val modeTag: String) {
+              SHONEN("Shonen", "Energía, foco y motivación"),
+              SLICE_OF_LIFE("Slice of Life", "Calma, cercanía y ambiente cotidiano"),
+              CYBERPUNK_SCIFI("Cyberpunk / Sci-Fi", "Precisión técnica y estilo futurista")
+          }
+
+          class LebProManager(context: Context) {
+              private val prefs = context.getSharedPreferences("leb_pro_prefs", Context.MODE_PRIVATE)
+
+              var isProEnabled: Boolean
+                  get() = prefs.getBoolean("is_pro_enabled", false)
+                  set(value) {
+                      prefs.edit().putBoolean("is_pro_enabled", value).apply()
+                      if (!value) {
+                          prefs.edit().putBoolean("dev_mode_enabled", false).apply()
+                      }
+                  }
+
+              var selectedAnimeStyle: AnimeStyle
+                  get() {
+                      val raw = prefs.getString("anime_style", AnimeStyle.SHONEN.name) ?: AnimeStyle.SHONEN.name
+                      return runCatching { AnimeStyle.valueOf(raw) }.getOrDefault(AnimeStyle.SHONEN)
+                  }
+                  set(value) = prefs.edit().putString("anime_style", value.name).apply()
+
+              var isDevModeEnabled: Boolean
+                  get() = isProEnabled && prefs.getBoolean("dev_mode_enabled", false)
+                  set(value) {
+                      if (isProEnabled) {
+                          prefs.edit().putBoolean("dev_mode_enabled", value).apply()
+                      }
+                  }
+
+              var highResAudioPro: Boolean
+                  get() = isProEnabled && prefs.getBoolean("high_res_audio_pro", true)
+                  set(value) {
+                      if (isProEnabled) {
+                          prefs.edit().putBoolean("high_res_audio_pro", value).apply()
+                      }
+                  }
+
+              fun askAnimeAi(prompt: String): String {
+                  if (!isProEnabled) {
+                      return "Función bloqueada: activa el modo Pro para usar la IA de Shonen, Slice of Life o Cyberpunk / Sci-Fi."
+                  }
+                  val cleanPrompt = if (prompt.isBlank()) "tu sesión actual" else prompt.trim()
+                  return when (selectedAnimeStyle) {
+                      AnimeStyle.SHONEN ->
+                          "[Shonen • Modo Pro] ¡Vamos al máximo! Para \"$cleanPrompt\", sube el ritmo y mantén el enfoque."
+                      AnimeStyle.SLICE_OF_LIFE ->
+                          "[Slice of Life • Modo Pro] Día tranquilo: para \"$cleanPrompt\", una atmósfera cálida y suave acompaña mejor."
+                      AnimeStyle.CYBERPUNK_SCIFI ->
+                          "[Cyberpunk / Sci-Fi • Modo Pro] Enlace activo para \"$cleanPrompt\": sintetizadores limpios y ritmo preciso."
+                  }
+              }
+
+              fun getDeveloperDiagnostics(): String {
+                  if (!isProEnabled) {
+                      return "Opciones de desarrollador disponibles solo en modo Pro."
+                  }
+                  return "PRO=true | ANIME=${selectedAnimeStyle.name} | DEV=$isDevModeEnabled | HIRES=$highResAudioPro"
+              }
+          }
+          EOF
+
+          cat << 'EOF' > "${SRC_ROOT}/res/layout/activity_leb_pro_hub.xml"
+          <?xml version="1.0" encoding="utf-8"?>
+          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:padding="16dp">
+
+              <LinearLayout
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:orientation="vertical">
+
+                  <TextView
+                      android:id="@+id/tvHubTitle"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:text="L.E.B-M 1.5-beta • Pro &amp; IA Anime"
+                      android:textSize="22sp"
+                      android:textStyle="bold"
+                      android:paddingBottom="12dp" />
+
+                  <Switch
+                      android:id="@+id/switchProMode"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:text="Activar / Desactivar Modo Pro"
+                      android:paddingBottom="12dp" />
+
+                  <LinearLayout
+                      android:id="@+id/proSectionContainer"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:orientation="vertical">
+
+                      <TextView
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:text="Opciones Pro"
+                          android:textSize="17sp"
+                          android:textStyle="bold"
+                          android:paddingTop="8dp"
+                          android:paddingBottom="6dp" />
+
+                      <Switch
+                          android:id="@+id/switchProHighRes"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:text="Perfil de audio Pro avanzado"
+                          android:paddingBottom="8dp" />
+
+                      <TextView
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:text="IA Anime (Solo Pro: Shonen / Slice of Life / Cyberpunk Sci-Fi)"
+                          android:textSize="16sp"
+                          android:textStyle="bold"
+                          android:paddingTop="6dp"
+                          android:paddingBottom="6dp" />
+
+                      <Spinner
+                          android:id="@+id/spinnerAnimeStyle"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:paddingBottom="8dp" />
+
+                      <EditText
+                          android:id="@+id/etAnimePrompt"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:hint="Escribe un mood o actividad (ej. entrenar, estudiar, noche)"
+                          android:paddingBottom="8dp" />
+
+                      <Button
+                          android:id="@+id/btnAskAnimeAi"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:text="Consultar IA Anime (Pro)" />
+
+                      <TextView
+                          android:id="@+id/tvAnimeResponse"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:text="Selecciona un estilo de anime y consulta la IA."
+                          android:paddingTop="8dp"
+                          android:paddingBottom="14dp" />
+
+                      <TextView
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:text="Opciones de Desarrollador (Solo Pro)"
+                          android:textSize="17sp"
+                          android:textStyle="bold"
+                          android:paddingTop="6dp"
+                          android:paddingBottom="6dp" />
+
+                      <Switch
+                          android:id="@+id/switchDevOptions"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:text="Habilitar herramientas de desarrollador" />
+
+                      <TextView
+                          android:id="@+id/tvDevInfo"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:text=""
+                          android:paddingTop="6dp" />
+                  </LinearLayout>
+
+              </LinearLayout>
+          </ScrollView>
+          EOF
+
+          cat << 'EOF' > "${SRC_ROOT}/java/com/leb/profeatures/LebProHubActivity.kt"
+          package com.leb.profeatures
+
+          import android.os.Bundle
+          import android.view.View
+          import android.widget.AdapterView
+          import android.widget.ArrayAdapter
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.LinearLayout
+          import android.widget.Spinner
+          import android.widget.Switch
+          import android.widget.TextView
+          import androidx.appcompat.app.AppCompatActivity
+
+          class LebProHubActivity : AppCompatActivity() {
+
+              private lateinit var proManager: LebProManager
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(
+                      resources.getIdentifier("activity_leb_pro_hub", "layout", packageName)
+                  )
+
+                  proManager = LebProManager(this)
+
+                  val switchPro = findViewById<Switch>(
+                      resources.getIdentifier("switchProMode", "id", packageName)
+                  )
+                  val proContainer = findViewById<LinearLayout>(
+                      resources.getIdentifier("proSectionContainer", "id", packageName)
+                  )
+                  val switchHighRes = findViewById<Switch>(
+                      resources.getIdentifier("switchProHighRes", "id", packageName)
+                  )
+                  val spinnerAnime = findViewById<Spinner>(
+                      resources.getIdentifier("spinnerAnimeStyle", "id", packageName)
+                  )
+                  val etPrompt = findViewById<EditText>(
+                      resources.getIdentifier("etAnimePrompt", "id", packageName)
+                  )
+                  val btnAskAi = findViewById<Button>(
+                      resources.getIdentifier("btnAskAnimeAi", "id", packageName)
+                  )
+                  val tvAiResponse = findViewById<TextView>(
+                      resources.getIdentifier("tvAnimeResponse", "id", packageName)
+                  )
+                  val switchDev = findViewById<Switch>(
+                      resources.getIdentifier("switchDevOptions", "id", packageName)
+                  )
+                  val tvDevInfo = findViewById<TextView>(
+                      resources.getIdentifier("tvDevInfo", "id", packageName)
+                  )
+
+                  val styles = AnimeStyle.values()
+                  val adapter = ArrayAdapter(
+                      this,
+                      android.R.layout.simple_spinner_dropdown_item,
+                      styles.map { "${it.displayName} — ${it.modeTag}" }
+                  )
+                  spinnerAnime.adapter = adapter
+                  spinnerAnime.setSelection(styles.indexOf(proManager.selectedAnimeStyle).coerceAtLeast(0))
+
+                  fun refreshProVisibility() {
+                      val active = proManager.isProEnabled
+                      switchPro.isChecked = active
+                      proContainer.visibility = if (active) View.VISIBLE else View.GONE
+                      switchHighRes.isChecked = proManager.highResAudioPro
+                      switchDev.isChecked = proManager.isDevModeEnabled
+                      tvDevInfo.visibility = if (active && proManager.isDevModeEnabled) View.VISIBLE else View.GONE
+                      tvDevInfo.text = proManager.getDeveloperDiagnostics()
+                  }
+
+                  switchPro.setOnCheckedChangeListener { _, checked ->
+                      proManager.isProEnabled = checked
+                      refreshProVisibility()
+                  }
+
+                  switchHighRes.setOnCheckedChangeListener { _, checked ->
+                      proManager.highResAudioPro = checked
+                      refreshProVisibility()
+                  }
+
+                  spinnerAnime.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                      override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                          proManager.selectedAnimeStyle = styles[position]
+                          refreshProVisibility()
+                      }
+
+                      override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+                  }
+
+                  btnAskAi.setOnClickListener {
+                      tvAiResponse.text = proManager.askAnimeAi(etPrompt.text?.toString().orEmpty())
+                  }
+
+                  switchDev.setOnCheckedChangeListener { _, checked ->
+                      proManager.isDevModeEnabled = checked
+                      refreshProVisibility()
+                  }
+
+                  refreshProVisibility()
+              }
+          }
+          EOF
+
+          python3 - << 'PYEOF'
+          import pathlib, xml.etree.ElementTree as ET
+
+          manifest_path = pathlib.Path("${SRC_ROOT}") / "AndroidManifest.xml"
+          if manifest_path.exists():
+              ET.register_namespace("android", "http://schemas.android.com/apk/res/android")
+              tree = ET.parse(manifest_path)
+              root = tree.getroot()
+              app = root.find("application")
+              if app is not None:
+                  exists = any(
+                      act.attrib.get("{http://schemas.android.com/apk/res/android}name") == "com.leb.profeatures.LebProHubActivity"
+                      for act in app.findall("activity")
+                  )
+                  if not exists:
+                      act = ET.SubElement(app, "activity")
+                      act.set("{http://schemas.android.com/apk/res/android}name", "com.leb.profeatures.LebProHubActivity")
+                      act.set("{http://schemas.android.com/apk/res/android}exported", "false")
+                      tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
+          PYEOF
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
