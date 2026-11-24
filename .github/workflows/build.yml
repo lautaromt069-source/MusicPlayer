@@ -1,4 +1,4 @@
-name: Build L.E.B-M 1.5-beta
+name: Build L.E.B-M 1.6-beta
 
 on:
   push:
@@ -44,7 +44,7 @@ jobs:
           ls -la "$PROJECT"
           ls -la "$PROJECT/app" || true
 
-      - name: Inject Pro ($3), Pro+ ($5), Anime AI, Custom AI, Dev Mode & Icon
+      - name: Inject 1.6-beta Pro ($3), Pro+ ($5), Anime AI, Custom AI, Dev Mode & Icon
         shell: bash
         run: |
           set -euo pipefail
@@ -52,14 +52,14 @@ jobs:
           export SRC_ROOT
           mkdir -p "${SRC_ROOT}/java/com/leb/profeatures" "${SRC_ROOT}/res/layout" "${SRC_ROOT}/res/anim"
 
-          ICON_URL="https://encrypted-tbn1.gstatic.com/licensed-image?q=tbn:ANd9GcQioRZFHG8GZT52oPpz7pP51dpWamWLblkVk84cKN2O9xXbNhULp1Q4KG_5d16WBLWB6BnTBWg7vGYB6Ng"
-          curl -fsSL -o /tmp/leb_icon_raw.jpg "$ICON_URL"
+          ICON_URL="https://encrypted-tbn1.gstatic.com/licensed-image?q=tbn:ANd9GcSk2POlGfuJx_7Op8TLq-BKJrzgE6Je-ph3fpXNRHR_7BIr-KE6mFavESmgzI_FJXZUOuxnFGjIh7BFGWA"
+          curl -fsSL -o /tmp/leb_16_icon_src.jpg "$ICON_URL"
 
           python3 - << 'PYEOF'
-          import os, pathlib, shutil, struct, zlib, xml.etree.ElementTree as ET
+          import io, os, pathlib, shutil, struct, zlib, xml.etree.ElementTree as ET
 
           src_root = pathlib.Path(os.environ["SRC_ROOT"])
-          raw_img = pathlib.Path("/tmp/leb_icon_raw.jpg")
+          raw_img = pathlib.Path("/tmp/leb_16_icon_src.jpg")
 
           def make_solid_png(width: int, height: int, r: int, g: int, b: int) -> bytes:
               def chunk(tag: bytes, data: bytes) -> bytes:
@@ -81,7 +81,6 @@ jobs:
                   left = (w - side) // 2
                   top = (h - side) // 2
                   square = rgba.crop((left, top, left + side, top + side)).resize((512, 512), Image.Resampling.LANCZOS)
-                  import io
                   buf = io.BytesIO()
                   square.save(buf, format="PNG")
                   png_bytes = buf.getvalue()
@@ -89,7 +88,7 @@ jobs:
               png_bytes = None
 
           if png_bytes is None:
-              png_bytes = make_solid_png(192, 192, 18, 185, 214)
+              png_bytes = make_solid_png(192, 192, 0, 229, 255)
 
           for anydpi in ["mipmap-anydpi-v26", "mipmap-anydpi"]:
               d = src_root / "res" / anydpi
@@ -131,16 +130,16 @@ jobs:
           <set xmlns:android="http://schemas.android.com/apk/res/android"
               android:interpolator="@android:anim/accelerate_decelerate_interpolator">
               <scale
-                  android:duration="320"
-                  android:fromXScale="0.96"
-                  android:fromYScale="0.96"
-                  android:toXScale="1.02"
-                  android:toYScale="1.02"
+                  android:duration="340"
+                  android:fromXScale="0.95"
+                  android:fromYScale="0.95"
+                  android:toXScale="1.03"
+                  android:toYScale="1.03"
                   android:pivotX="50%"
                   android:pivotY="50%" />
               <alpha
-                  android:duration="320"
-                  android:fromAlpha="0.75"
+                  android:duration="340"
+                  android:fromAlpha="0.7"
                   android:toAlpha="1.0" />
           </set>
           EOF
@@ -175,7 +174,9 @@ jobs:
           }
 
           class LebProManager(context: Context) {
-              private val prefs = context.getSharedPreferences("leb_pro_plus_prefs", Context.MODE_PRIVATE)
+              private val prefs = context.getSharedPreferences("leb_16_beta_prefs", Context.MODE_PRIVATE)
+
+              val appVersionName: String = "1.6-beta"
 
               var currentTier: MembershipTier
                   get() {
@@ -214,19 +215,19 @@ jobs:
                   }
 
               var customAiName: String
-                  get() = prefs.getString("custom_ai_name", "Nova-X") ?: "Nova-X"
+                  get() = prefs.getString("custom_ai_name", "Nova-1.6") ?: "Nova-1.6"
                   set(value) {
                       if (hasProPlusAccess) {
-                          val clean = value.trim().ifEmpty { "Nova-X" }
+                          val clean = value.trim().ifEmpty { "Nova-1.6" }
                           prefs.edit().putString("custom_ai_name", clean).apply()
                       }
                   }
 
               var customAiPersonality: String
-                  get() = prefs.getString("custom_ai_personality", "Aliado creativo y directo") ?: "Aliado creativo y directo"
+                  get() = prefs.getString("custom_ai_personality", "Guía directo y adaptable") ?: "Guía directo y adaptable"
                   set(value) {
                       if (hasProPlusAccess) {
-                          val clean = value.trim().ifEmpty { "Aliado creativo y directo" }
+                          val clean = value.trim().ifEmpty { "Guía directo y adaptable" }
                           prefs.edit().putString("custom_ai_personality", clean).apply()
                       }
                   }
@@ -264,13 +265,13 @@ jobs:
 
                   return when (selectedAnimeStyle) {
                       AnimeStyle.SHONEN ->
-                          "[Shonen • Pro+] $tonePrefix ¡A darlo todo! Para \"$cleanPrompt\", sube la intensidad y mantén el ritmo."
+                          "[Shonen • v$appVersionName • Pro+] $tonePrefix ¡A darlo todo! Para \"$cleanPrompt\", sube la intensidad y mantén el ritmo."
                       AnimeStyle.SLICE_OF_LIFE ->
-                          "[Slice of Life • Pro+] $tonePrefix Momento tranquilo: para \"$cleanPrompt\", un ambiente cálido y pausado encaja mejor."
+                          "[Slice of Life • v$appVersionName • Pro+] $tonePrefix Momento tranquilo: para \"$cleanPrompt\", un ambiente cálido y pausado encaja mejor."
                       AnimeStyle.CYBERPUNK_SCIFI ->
-                          "[Cyberpunk / Sci-Fi • Pro+] $tonePrefix Enlace activo sobre \"$cleanPrompt\": pulsos electrónicos y enfoque preciso."
+                          "[Cyberpunk / Sci-Fi • v$appVersionName • Pro+] $tonePrefix Enlace activo sobre \"$cleanPrompt\": pulsos electrónicos y enfoque preciso."
                       AnimeStyle.CUSTOM ->
-                          "[$customAiName ($customAiPersonality) • Pro+] $tonePrefix Para \"$cleanPrompt\": respuesta adaptada a tu IA personal."
+                          "[$customAiName ($customAiPersonality) • v$appVersionName • Pro+] $tonePrefix Para \"$cleanPrompt\": respuesta adaptada a tu IA personal."
                   }
               }
 
@@ -278,7 +279,7 @@ jobs:
                   if (!hasProAccess) {
                       return "Modo desarrollador bloqueado: activa Pro ($3 USD) o Pro+ ($5 USD)."
                   }
-                  return "DEV_MODE=ACTIVE | TIER=${currentTier.name} (${currentTier.priceText}) | HIRES=$highResAudioPro | STYLE=${selectedAnimeStyle.name} | TONE=${personalityTone.name}"
+                  return "VER=$appVersionName | DEV=$isDevModeEnabled | TIER=${currentTier.name} (${currentTier.priceText}) | HIRES=$highResAudioPro | STYLE=${selectedAnimeStyle.name} | TONE=${personalityTone.name}"
               }
           }
           EOF
@@ -289,7 +290,7 @@ jobs:
               android:id="@+id/scrollProRoot"
               android:layout_width="match_parent"
               android:layout_height="match_parent"
-              android:background="#121212"
+              android:background="#0F1117"
               android:padding="16dp">
 
               <LinearLayout
@@ -301,7 +302,7 @@ jobs:
                       android:id="@+id/tvHubTitle"
                       android:layout_width="match_parent"
                       android:layout_height="wrap_content"
-                      android:text="L.E.B-M 1.5-beta • Pro ($3) &amp; Pro+ ($5)"
+                      android:text="L.E.B-M 1.6-beta • Pro ($3) &amp; Pro+ ($5)"
                       android:textColor="#FFFFFF"
                       android:textSize="21sp"
                       android:textStyle="bold"
@@ -312,7 +313,7 @@ jobs:
                       android:layout_width="match_parent"
                       android:layout_height="wrap_content"
                       android:text="Plan actual: Gratis ($0)"
-                      android:textColor="#BDBDBD"
+                      android:textColor="#90CAF9"
                       android:textSize="14sp"
                       android:paddingBottom="10dp" />
 
@@ -328,7 +329,7 @@ jobs:
                       android:id="@+id/spinnerTierSelect"
                       android:layout_width="match_parent"
                       android:layout_height="wrap_content"
-                      android:background="#262626"
+                      android:background="#1D2230"
                       android:padding="8dp"
                       android:layout_marginBottom="14dp" />
 
@@ -336,7 +337,7 @@ jobs:
                       android:id="@+id/proSectionContainer"
                       android:layout_width="match_parent"
                       android:layout_height="wrap_content"
-                      android:background="#1C1C1C"
+                      android:background="#181C28"
                       android:orientation="vertical"
                       android:padding="14dp"
                       android:layout_marginBottom="14dp">
@@ -363,7 +364,7 @@ jobs:
                           android:layout_width="match_parent"
                           android:layout_height="wrap_content"
                           android:text="Modo desarrollador (Solo Pro / Pro+)"
-                          android:textColor="#80DEEA" />
+                          android:textColor="#4DD0E1" />
 
                       <TextView
                           android:id="@+id/tvDevInfo"
@@ -378,7 +379,7 @@ jobs:
                       android:id="@+id/proPlusSectionContainer"
                       android:layout_width="match_parent"
                       android:layout_height="wrap_content"
-                      android:background="#221A2B"
+                      android:background="#20172C"
                       android:orientation="vertical"
                       android:padding="14dp">
 
@@ -411,7 +412,7 @@ jobs:
                           android:id="@+id/spinnerAnimeStyle"
                           android:layout_width="match_parent"
                           android:layout_height="wrap_content"
-                          android:background="#31243D"
+                          android:background="#2E2140"
                           android:padding="6dp"
                           android:layout_marginBottom="10dp" />
 
@@ -427,7 +428,7 @@ jobs:
                           android:id="@+id/spinnerAiTone"
                           android:layout_width="match_parent"
                           android:layout_height="wrap_content"
-                          android:background="#31243D"
+                          android:background="#2E2140"
                           android:padding="6dp"
                           android:layout_marginBottom="10dp" />
 
@@ -443,7 +444,7 @@ jobs:
                           android:id="@+id/etCustomAiName"
                           android:layout_width="match_parent"
                           android:layout_height="wrap_content"
-                          android:hint="Nombre de tu IA (ej. Nova-X)"
+                          android:hint="Nombre de tu IA (ej. Nova-1.6)"
                           android:textColor="#FFFFFF"
                           android:textColorHint="#B39DDB"
                           android:paddingBottom="6dp" />
@@ -452,7 +453,7 @@ jobs:
                           android:id="@+id/etCustomAiPersonality"
                           android:layout_width="match_parent"
                           android:layout_height="wrap_content"
-                          android:hint="Personalidad de tu IA (ej. mentor calmado, cyber guía)"
+                          android:hint="Personalidad de tu IA (ej. guía directo y adaptable)"
                           android:textColor="#FFFFFF"
                           android:textColorHint="#B39DDB"
                           android:paddingBottom="8dp" />
@@ -611,7 +612,7 @@ jobs:
                       val hasPro = proManager.hasProAccess
                       val hasPlus = proManager.hasProPlusAccess
 
-                      tvStatusBanner.text = "Plan actual: ${tier.label} (${tier.priceText})"
+                      tvStatusBanner.text = "Plan actual: ${tier.label} (${tier.priceText}) • v${proManager.appVersionName}"
                       proContainer.visibility = if (hasPro) View.VISIBLE else View.GONE
                       proPlusContainer.visibility = if (hasPlus) View.VISIBLE else View.GONE
 
@@ -748,26 +749,26 @@ jobs:
             find "${PROJECT}" -name "*.apk" || true
             exit 1
           fi
-          cp "$APK" "L.E.B-M-1.5-beta.apk"
+          cp "$APK" "L.E.B-M-1.6-beta.apk"
 
           TARGET_BYTES=$((61 * 1024 * 1024))
-          CURRENT_BYTES=$(stat -c%s "L.E.B-M-1.5-beta.apk")
+          CURRENT_BYTES=$(stat -c%s "L.E.B-M-1.6-beta.apk")
           echo "Tamano original APK: ${CURRENT_BYTES} bytes (objetivo: ${TARGET_BYTES} bytes = 61 MB)"
 
           if [ "$CURRENT_BYTES" -lt "$TARGET_BYTES" ]; then
             PAD_BYTES=$((TARGET_BYTES - CURRENT_BYTES))
-            dd if=/dev/zero bs=1 count=0 seek="$PAD_BYTES" of=/tmp/leb_pad.bin
-            cat /tmp/leb_pad.bin >> "L.E.B-M-1.5-beta.apk"
-            rm -f /tmp/leb_pad.bin
+            dd if=/dev/zero bs=1 count=0 seek="$PAD_BYTES" of=/tmp/leb_16_pad.bin
+            cat /tmp/leb_16_pad.bin >> "L.E.B-M-1.6-beta.apk"
+            rm -f /tmp/leb_16_pad.bin
           elif [ "$CURRENT_BYTES" -gt "$TARGET_BYTES" ]; then
             echo "Aviso: el APK ya pesa mas de 61 MB (${CURRENT_BYTES} bytes); se conserva sin recortar para no danarlo."
           fi
 
-          ls -lh "L.E.B-M-1.5-beta.apk"
+          ls -lh "L.E.B-M-1.6-beta.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: L.E.B-M-1.5-beta
-          path: L.E.B-M-1.5-beta.apk
+          name: L.E.B-M-1.6-beta
+          path: L.E.B-M-1.6-beta.apk
           if-no-files-found: error
