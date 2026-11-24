@@ -1,568 +1,508 @@
-name: Build L.E.B-M 1.7-beta
+name: Build L.E.B-M 1.5-beta
 
 on:
   push:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
   build:
-    name: Build L.E.B-M 1.7-beta APK
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Unpack and locate Android project
+      - name: Unpack project
         shell: bash
         run: |
           set -euo pipefail
-
           if [ -f MusicPlayer.zip ]; then
-            mkdir -p unpacked
-            unzip -oq MusicPlayer.zip -d unpacked
+            echo "Descomprimiendo MusicPlayer.zip..."
+            unzip -q -o MusicPlayer.zip
           fi
-
           PROJECT=""
-          while IFS= read -r file; do
-            candidate="$(dirname "$file")"
-            if [ -d "$candidate/app" ]; then
+          for candidate in "." "./MusicPlayer" "./leb" "./MusicPlayer/MusicPlayer"; do
+            if [ -f "$candidate/settings.gradle" ] || [ -f "$candidate/settings.gradle.kts" ]; then
               PROJECT="$candidate"
               break
             fi
-          done < <(
-            find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
-              -not -path './.git/*' -not -path '*/.gradle/*' | sort
-          )
-
+          done
           if [ -z "$PROJECT" ]; then
-            echo "::error::No se encontró un proyecto Android con settings.gradle(.kts) y app/."
-            find . -maxdepth 5 -type f | head -100
+            FOUND=$(find . -name "settings.gradle" -o -name "settings.gradle.kts" | grep -v "/\.git/" | head -n 1 || true)
+            if [ -n "$FOUND" ]; then
+              PROJECT=$(dirname "$FOUND")
+            fi
+          fi
+          if [ -z "$PROJECT" ]; then
+            echo "ERROR: no se encontro settings.gradle"
+            find . -maxdepth 5 -type f | head -80
             exit 1
           fi
-
-          PROJECT="$(cd "$PROJECT" && pwd)"
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
-          echo "Proyecto encontrado: $PROJECT"
+          echo "Proyecto: $PROJECT"
+          ls -la "$PROJECT"
+          ls -la "$PROJECT/app" || true
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: '17'
+          distribution: "temurin"
+          java-version: "17"
 
-      # Instala Android SDK directamente. Las rutas se escriben en GITHUB_PATH,
-      # mientras que las variables de entorno se escriben en GITHUB_ENV.
       - name: Install Android command-line tools
         shell: bash
         run: |
           set -euo pipefail
+          SDK_ROOT="${HOME}/android-sdk"
+          rm -rf "$SDK_ROOT"
+          mkdir -p "$SDK_ROOT/cmdline-tools"
+          curl -fsSL -o /tmp/cmdline-tools.zip \
+            "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+          unzip -q /tmp/cmdline-tools.zip -d "$SDK_ROOT/cmdline-tools"
+          mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+          {
+            echo "ANDROID_HOME=$SDK_ROOT"
+            echo "ANDROID_SDK_ROOT=$SDK_ROOT"
+          } >> "$GITHUB_ENV"
+          {
+            echo "$SDK_ROOT/cmdline-tools/latest/bin"
+            echo "$SDK_ROOT/platform-tools"
+          } >> "$GITHUB_PATH"
 
-          SDK_ROOT="$HOME/android-sdk"
-          mkdir -p "$SDK_ROOT/cmdline-tools/latest" "$RUNNER_TEMP/android-tools"
-
-          curl --fail --location --retry 3 \
-            "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip" \
-            --output "$RUNNER_TEMP/android-tools.zip"
-
-          unzip -q "$RUNNER_TEMP/android-tools.zip" -d "$RUNNER_TEMP/android-tools"
-          cp -R "$RUNNER_TEMP/android-tools/cmdline-tools/." "$SDK_ROOT/cmdline-tools/latest/"
-
-          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "$SDK_ROOT/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$SDK_ROOT/platform-tools" >> "$GITHUB_PATH"
-
-      - name: Install Android SDK packages
+      - name: Install SDK packages
         shell: bash
         run: |
           set -euo pipefail
-          yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
-          sdkmanager --sdk_root="$ANDROID_HOME" --install \
+          yes | sdkmanager --sdk_root="${ANDROID_HOME}" --licenses > /tmp/sdk-licenses.txt || true
+          sdkmanager --sdk_root="${ANDROID_HOME}" \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0"
+          sdkmanager --sdk_root="${ANDROID_HOME}" --list_installed | head -40
 
-      - name: Inject L.E.B-M 1.7-beta Pro Hub
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      # ─────────────────────────────────────────────────────────────
+      # INYECCIÓN DE FEATURES PRO (IA + UI + TOGGLE PRO/DEV)
+      # ─────────────────────────────────────────────────────────────
+      - name: Inject Pro features (AI + UI + Pro/Dev toggle)
         shell: bash
+        env:
+          PRO_AI_BASE: "https://api.deepinfra.com/v1/openai"
+          PRO_AI_MODEL: "meta-llama/Meta-Llama-3.1-8B-Instruct"
         run: |
           set -euo pipefail
+          cd "${PROJECT}"
 
-          SRC="$PROJECT/app/src/main"
-          mkdir -p "$SRC/java/com/leb/profeatures" "$SRC/res/layout"
+          # Detectar módulo app
+          APP_DIR="app"
+          [ -d "$APP_DIR" ] || APP_DIR=$(find . -maxdepth 2 -type d -name "app" | head -n1)
+          PKG=$(grep -oP 'namespace\s*=\s*"\K[^"]+' "$APP_DIR/build.gradle" "$APP_DIR/build.gradle.kts" 2>/dev/null | head -n1 || true)
+          [ -n "$PKG" ] || PKG="com.leb.musicplayer"
+          PKG_PATH=$(echo "$PKG" | tr '.' '/')
+          SRC_DIR="$APP_DIR/src/main/java/$PKG_PATH"
+          RES_DIR="$APP_DIR/src/main/res"
+          mkdir -p "$SRC_DIR" "$RES_DIR/values" "$RES_DIR/drawable" "$RES_DIR/mipmap-anydpi-v26" "$RES_DIR/layout"
 
-          cat > "$SRC/java/com/leb/profeatures/LebProManager.kt" <<'KOTLIN'
-          package com.leb.profeatures
+          echo "PKG=$PKG"
+          echo "SRC_DIR=$SRC_DIR"
+
+          # ── 1) Preferencias Pro / Dev (persistencia) ─────────────
+          cat > "$SRC_DIR/ProPrefs.kt" <<'EOF'
+          package __PKG__
 
           import android.content.Context
+          import android.content.SharedPreferences
 
-          // Los planes son modos de demostración locales. No procesan pagos.
-          enum class MembershipTier(val label: String, val priceText: String) {
-              FREE("Gratis", "$0"),
-              PRO("Pro (demo)", "$3 USD"),
-              PRO_PLUS("Pro+ (demo)", "$5 USD")
+          object ProPrefs {
+              private const val FILE = "leb_pro_prefs"
+              private const val KEY_PRO = "pro_enabled"
+              private const val KEY_DEV = "dev_enabled"
+
+              private fun sp(ctx: Context): SharedPreferences =
+                  ctx.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+
+              fun isPro(ctx: Context): Boolean = sp(ctx).getBoolean(KEY_PRO, false)
+              fun setPro(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(KEY_PRO, v).apply()
+
+              // Dev options SOLO si Pro está activo
+              fun isDev(ctx: Context): Boolean = isPro(ctx) && sp(ctx).getBoolean(KEY_DEV, false)
+              fun setDev(ctx: Context, v: Boolean) = sp(ctx).edit().putBoolean(KEY_DEV, v).apply()
           }
+          EOF
 
-          enum class AnimeStyle(val displayName: String, val description: String) {
-              SHONEN("Shonen", "Energía, foco y motivación"),
-              SLICE_OF_LIFE("Slice of Life", "Calma y ambiente cotidiano"),
-              CYBERPUNK_SCIFI("Cyberpunk / Sci-Fi", "Estilo futurista"),
-              CUSTOM("Mi IA Personalizada", "Personalidad creada por el usuario")
-          }
+          # ── 2) Motor IA: 3 estilos de anime ─────────────────────
+          #  - Shonen  (acción, energía, hype)        -> Naruto/DBZ/One Piece
+          #  - Seinen  (oscuro, profundo, psicológico)-> Berserk/Monster/Tokyo Ghoul
+          #  - Slice of Life (calma, emocional)       -> Clannad/K-On/A Silent Voice
+          cat > "$SRC_DIR/AnimeAI.kt" <<'EOF'
+          package __PKG__
 
-          enum class AiPersonalityTone(val title: String) {
-              BALANCED("Equilibrado"),
-              INTENSE("Intenso / Directo"),
-              CALM("Suave / Cercano"),
-              ANALYTICAL("Técnico / Analítico")
-          }
+          import android.content.Context
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.withContext
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.net.HttpURLConnection
+          import java.net.URL
 
-          class LebProManager(context: Context) {
-              private val prefs = context.getSharedPreferences("leb_17_beta_prefs", Context.MODE_PRIVATE)
-              val appVersionName = "1.7-beta"
+          /**
+           * Motor IA L.E.B Pro — 3 personalidades de anime:
+           *  SHONEN        -> energía, hype, recomendaciones intensas (Naruto, DBZ, One Piece)
+           *  SEINEN        -> oscuro, profundo, psicológico (Berserk, Monster, Tokyo Ghoul)
+           *  SLICE_OF_LIFE -> tranquilo, emocional, cotidiano (Clannad, K-On!, A Silent Voice)
+           *
+           * Solo disponible si ProPrefs.isPro(ctx) == true.
+           */
+          object AnimeAI {
 
-              var currentTier: MembershipTier
-                  get() = runCatching {
-                      MembershipTier.valueOf(prefs.getString("tier", "FREE") ?: "FREE")
-                  }.getOrDefault(MembershipTier.FREE)
-                  set(value) {
-                      prefs.edit().putString("tier", value.name).apply()
-                      if (value == MembershipTier.FREE) {
-                          prefs.edit().putBoolean("dev", false).apply()
-                      }
-                  }
-
-              val hasProAccess: Boolean
-                  get() = currentTier == MembershipTier.PRO || currentTier == MembershipTier.PRO_PLUS
-
-              val hasProPlusAccess: Boolean
-                  get() = currentTier == MembershipTier.PRO_PLUS
-
-              var animeStyle: AnimeStyle
-                  get() = runCatching {
-                      AnimeStyle.valueOf(prefs.getString("style", "SHONEN") ?: "SHONEN")
-                  }.getOrDefault(AnimeStyle.SHONEN)
-                  set(value) { prefs.edit().putString("style", value.name).apply() }
-
-              var tone: AiPersonalityTone
-                  get() = runCatching {
-                      AiPersonalityTone.valueOf(prefs.getString("tone", "BALANCED") ?: "BALANCED")
-                  }.getOrDefault(AiPersonalityTone.BALANCED)
-                  set(value) {
-                      if (hasProPlusAccess) prefs.edit().putString("tone", value.name).apply()
-                  }
-
-              var customAiName: String
-                  get() = prefs.getString("ai_name", "Nova-1.7") ?: "Nova-1.7"
-                  set(value) {
-                      if (hasProPlusAccess) prefs.edit().putString("ai_name", value.trim().ifBlank { "Nova-1.7" }).apply()
-                  }
-
-              var customAiPersonality: String
-                  get() = prefs.getString("ai_personality", "Guía directo y adaptable") ?: "Guía directo y adaptable"
-                  set(value) {
-                      if (hasProPlusAccess) prefs.edit().putString("ai_personality", value.trim().ifBlank { "Guía directo y adaptable" }).apply()
-                  }
-
-              var devMode: Boolean
-                  get() = hasProAccess && prefs.getBoolean("dev", false)
-                  set(value) {
-                      if (hasProAccess) prefs.edit().putBoolean("dev", value).apply()
-                  }
-
-              var highResAudio: Boolean
-                  get() = hasProAccess && prefs.getBoolean("hires", true)
-                  set(value) {
-                      if (hasProAccess) prefs.edit().putBoolean("hires", value).apply()
-                  }
-
-              var animations: Boolean
-                  get() = hasProPlusAccess && prefs.getBoolean("animations", true)
-                  set(value) {
-                      if (hasProPlusAccess) prefs.edit().putBoolean("animations", value).apply()
-                  }
-
-              fun askAi(prompt: String): String {
-                  if (!hasProPlusAccess) return "La IA Anime es una demostración exclusiva del modo Pro+."
-                  val subject = prompt.trim().ifBlank { "tu música" }
-                  val prefix = "L.E.B-M ${appVersionName} • ${tone.title}"
-                  return when (animeStyle) {
-                      AnimeStyle.SHONEN -> "$prefix\n¡Vamos con energía! Para «$subject», mantén el enfoque y disfruta el ritmo."
-                      AnimeStyle.SLICE_OF_LIFE -> "$prefix\nTomate un momento tranquilo. Para «$subject», elegí un ambiente relajado."
-                      AnimeStyle.CYBERPUNK_SCIFI -> "$prefix\nSistema activo. Analizando «$subject» con precisión futurista."
-                      AnimeStyle.CUSTOM -> "$prefix\n$customAiName ($customAiPersonality): acompañando tu actividad «$subject»."
-                  }
+              enum class Style(val label: String, val system: String) {
+                  SHONEN(
+                      "Shonen 🔥",
+                      "Eres un DJ asistente estilo SHONEN anime. Hablas con energía, hype y frases " +
+                      "motivadoras (Naruto, Dragon Ball Z, One Piece, My Hero Academia). " +
+                      "Recomiendas música épica, openings y canciones con drop para entrenar o animarte. " +
+                      "Respuestas cortas (máx 3 líneas), con emojis ⚡🔥💥."
+                  ),
+                  SEINEN(
+                      "Seinen 🌑",
+                      "Eres un curador musical estilo SEINEN anime. Tono profundo, reflexivo y " +
+                      "ligeramente oscuro (Berserk, Monster, Tokyo Ghoul, Vinland Saga). " +
+                      "Recomiendas música atmosférica, lo-fi oscuro, post-rock y openings melancólicos. " +
+                      "Respuestas cortas (máx 3 líneas), con emojis 🌑🖤🌫️."
+                  ),
+                  SLICE_OF_LIFE(
+                      "Slice of Life 🌸",
+                      "Eres un compañero musical estilo SLICE OF LIFE anime. Tono cálido, tranquilo " +
+                      "y emocional (Clannad, K-On!, A Silent Voice, Your Lie in April). " +
+                      "Recomiendas música acústica, indie pop, piano y openings suaves. " +
+                      "Respuestas cortas (máx 3 líneas), con emojis 🌸☕🎧."
+                  )
               }
 
-              fun diagnostics(): String =
-                  "VERSIÓN=$appVersionName\nPLAN=${currentTier.name}\nDEV=$devMode\nAUDIO_PRO=$highResAudio"
+              // Endpoint compatible OpenAI — el token se toma de BuildConfig.PRO_AI_TOKEN
+              private const val BASE_URL = "__BASE__"
+              private const val MODEL = "__MODEL__"
+
+              suspend fun ask(
+                  ctx: Context,
+                  style: Style,
+                  userMessage: String
+              ): String = withContext(Dispatchers.IO) {
+                  if (!ProPrefs.isPro(ctx)) {
+                      return@withContext "🔒 Función exclusiva de L.E.B-M Pro."
+                  }
+                  val token = BuildConfig.PRO_AI_TOKEN
+                  if (token.isBlank()) {
+                      return@withContext "⚠️ Falta PRO_AI_TOKEN en la build (secreto)."
+                  }
+                  try {
+                      val url = URL("$BASE_URL/chat/completions")
+                      val conn = url.openConnection() as HttpURLConnection
+                      conn.requestMethod = "POST"
+                      conn.setRequestProperty("Content-Type", "application/json")
+                      conn.setRequestProperty("Authorization", "Bearer $token")
+                      conn.doOutput = true
+                      conn.connectTimeout = 15000
+                      conn.readTimeout = 20000
+
+                      val messages = JSONArray().apply {
+                          put(JSONObject().put("role", "system").put("content", style.system))
+                          put(JSONObject().put("role", "user").put("content", userMessage))
+                      }
+                      val body = JSONObject()
+                          .put("model", MODEL)
+                          .put("messages", messages)
+                          .put("max_tokens", 180)
+                          .put("temperature", 0.8)
+                          .toString()
+
+                      conn.outputStream.use { it.write(body.toByteArray()) }
+                      val code = conn.responseCode
+                      val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                      val resp = stream.bufferedReader().readText()
+                      if (code !in 200..299) return@withContext "⚠️ IA ($code): ${resp.take(120)}"
+
+                      val content = JSONObject(resp)
+                          .getJSONArray("choices")
+                          .getJSONObject(0)
+                          .getJSONObject("message")
+                          .getString("content")
+                          .trim()
+                      content
+                  } catch (e: Exception) {
+                      "⚠️ Error IA: ${e.message?.take(120) ?: "desconocido"}"
+                  }
+              }
           }
-          KOTLIN
+          EOF
 
-          cat > "$SRC/res/layout/activity_leb_pro_hub.xml" <<'XML'
-          <?xml version="1.0" encoding="utf-8"?>
-          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-              android:layout_width="match_parent"
-              android:layout_height="match_parent"
-              android:background="#0F1117"
-              android:padding="16dp">
+          # Reemplazar tokens
+          sed -i "s|__PKG__|$PKG|g" "$SRC_DIR/ProPrefs.kt" "$SRC_DIR/AnimeAI.kt"
+          sed -i "s|__BASE__|${PRO_AI_BASE}|g" "$SRC_DIR/AnimeAI.kt"
+          sed -i "s|__MODEL__|${PRO_AI_MODEL}|g" "$SRC_DIR/AnimeAI.kt"
 
-              <LinearLayout
-                  android:layout_width="match_parent"
-                  android:layout_height="wrap_content"
-                  android:orientation="vertical">
+          # ── 3) Pantalla de Ajustes Pro / Dev ─────────────────────
+          cat > "$SRC_DIR/ProSettingsActivity.kt" <<'EOF'
+          package __PKG__
 
-                  <TextView
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:text="L.E.B-M 1.7-beta"
-                      android:textColor="#FFFFFF"
-                      android:textSize="25sp"
-                      android:textStyle="bold" />
-
-                  <TextView
-                      android:id="@+id/tvTierStatus"
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:paddingTop="6dp"
-                      android:paddingBottom="12dp"
-                      android:text="Plan actual: Gratis"
-                      android:textColor="#80DEEA" />
-
-                  <TextView
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:text="Planes de prueba (no se realizan cobros)"
-                      android:textColor="#FFFFFF"
-                      android:textStyle="bold" />
-
-                  <Spinner
-                      android:id="@+id/spTier"
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:layout_marginBottom="14dp" />
-
-                  <LinearLayout
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:background="#1B2030"
-                      android:orientation="vertical"
-                      android:padding="14dp">
-
-                      <TextView
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="PRO • Audio avanzado y modo desarrollador"
-                          android:textColor="#FFFFFF"
-                          android:textStyle="bold" />
-
-                      <Switch
-                          android:id="@+id/swHighRes"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Perfil de audio Pro"
-                          android:textColor="#FFFFFF" />
-
-                      <Switch
-                          android:id="@+id/swDev"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Modo desarrollador"
-                          android:textColor="#80DEEA" />
-
-                      <TextView
-                          android:id="@+id/tvDiagnostics"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:paddingTop="8dp"
-                          android:textColor="#80DEEA" />
-                  </LinearLayout>
-
-                  <LinearLayout
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:layout_marginTop="14dp"
-                      android:background="#25172F"
-                      android:orientation="vertical"
-                      android:padding="14dp">
-
-                      <TextView
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="PRO+ • IA Anime y personalización"
-                          android:textColor="#F3E5F5"
-                          android:textStyle="bold" />
-
-                      <Switch
-                          android:id="@+id/swAnimations"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Animaciones Pro+"
-                          android:textColor="#FFFFFF" />
-
-                      <TextView
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:paddingTop="8dp"
-                          android:text="Elegir estilo de IA"
-                          android:textColor="#FFFFFF" />
-
-                      <Spinner
-                          android:id="@+id/spStyle"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content" />
-
-                      <TextView
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:paddingTop="8dp"
-                          android:text="Personalidad"
-                          android:textColor="#FFFFFF" />
-
-                      <Spinner
-                          android:id="@+id/spTone"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content" />
-
-                      <EditText
-                          android:id="@+id/etAiName"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:hint="Nombre de tu IA"
-                          android:singleLine="true"
-                          android:textColor="#FFFFFF"
-                          android:textColorHint="#B39DDB" />
-
-                      <EditText
-                          android:id="@+id/etAiPersonality"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:hint="Personalidad de tu IA"
-                          android:textColor="#FFFFFF"
-                          android:textColorHint="#B39DDB" />
-
-                      <Button
-                          android:id="@+id/btnSaveAi"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Guardar IA personalizada" />
-
-                      <EditText
-                          android:id="@+id/etPrompt"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:hint="Escribe un tema o actividad"
-                          android:textColor="#FFFFFF"
-                          android:textColorHint="#B39DDB" />
-
-                      <Button
-                          android:id="@+id/btnAskAi"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Consultar IA Anime" />
-
-                      <TextView
-                          android:id="@+id/tvAiResponse"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:paddingTop="12dp"
-                          android:text="Selecciona un estilo y consulta la IA."
-                          android:textColor="#FFFFFF" />
-                  </LinearLayout>
-              </LinearLayout>
-          </ScrollView>
-          XML
-
-          cat > "$SRC/java/com/leb/profeatures/LebProHubActivity.kt" <<'KOTLIN'
-          package com.leb.profeatures
-
-          import android.app.Activity
           import android.os.Bundle
-          import android.view.View
-          import android.widget.ArrayAdapter
-          import android.widget.Button
-          import android.widget.EditText
-          import android.widget.Spinner
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
           import android.widget.Switch
           import android.widget.TextView
+          import androidx.appcompat.app.AppCompatActivity
 
-          class LebProHubActivity : Activity() {
-              private lateinit var manager: LebProManager
+          class ProSettingsActivity : AppCompatActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  title = "L.E.B-M Pro"
 
-              private fun viewId(name: String): Int =
-                  resources.getIdentifier(name, "id", packageName)
+                  val ll = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(48, 48, 48, 48)
+                  }
+
+                  fun header(t: String): TextView = TextView(this).apply {
+                      text = t
+                      textSize = 18f
+                      setPadding(0, 32, 0, 12)
+                  }
+
+                  ll.addView(TextView(this).apply {
+                      text = "L.E.B-M 1.5-beta · Edición Pro"
+                      textSize = 22f
+                  })
+
+                  // Toggle PRO
+                  val swPro = Switch(this).apply {
+                      text = "Activar modo Pro (IA + opciones avanzadas)"
+                      isChecked = ProPrefs.isPro(this@ProSettingsActivity)
+                      setOnCheckedChangeListener { _, v ->
+                          ProPrefs.setPro(this@ProSettingsActivity, v)
+                          if (!v) ProPrefs.setDev(this@ProSettingsActivity, false)
+                      }
+                  }
+                  ll.addView(swPro)
+
+                  ll.addView(header("🤖 IA Anime (solo Pro)"))
+                  ll.addView(TextView(this).apply {
+                      text = "Elegí el estilo del asistente IA:\n" +
+                             "• Shonen 🔥 — hype, openings épicos\n" +
+                             "• Seinen 🌑 — oscuro, atmosférico\n" +
+                             "• Slice of Life 🌸 — cálido, acústico"
+                  })
+
+                  // Toggle Dev (solo Pro)
+                  ll.addView(header("🛠 Opciones de desarrollador (solo Pro)"))
+                  val swDev = Switch(this).apply {
+                      text = "Habilitar opciones de desarrollador"
+                      isChecked = ProPrefs.isDev(this@ProSettingsActivity)
+                      isEnabled = ProPrefs.isPro(this@ProSettingsActivity)
+                      setOnCheckedChangeListener { _, v ->
+                          if (ProPrefs.isPro(this@ProSettingsActivity)) {
+                              ProPrefs.setDev(this@ProSettingsActivity, v)
+                          }
+                      }
+                  }
+                  ll.addView(swDev)
+
+                  // Refrescar dev si se toca Pro
+                  swPro.setOnCheckedChangeListener { _, v ->
+                      ProPrefs.setPro(this@ProSettingsActivity, v)
+                      if (!v) ProPrefs.setDev(this@ProSettingsActivity, false)
+                      swDev.isEnabled = v
+                      if (!v) swDev.isChecked = false
+                  }
+
+                  setContentView(ScrollView(this).apply { addView(ll) })
+              }
+          }
+          EOF
+          sed -i "s|__PKG__|$PKG|g" "$SRC_DIR/ProSettingsActivity.kt"
+
+          # ── 4) Pantalla IA (chat rápido por estilo) ──────────────
+          cat > "$SRC_DIR/AnimeAIActivity.kt" <<'EOF'
+          package __PKG__
+
+          import android.os.Bundle
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.LinearLayout
+          import android.widget.ScrollView
+          import android.widget.TextView
+          import androidx.appcompat.app.AppCompatActivity
+          import androidx.lifecycle.lifecycleScope
+          import kotlinx.coroutines.launch
+
+          class AnimeAIActivity : AppCompatActivity() {
+              private var style = AnimeAI.Style.SHONEN
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
-                  val layoutId = resources.getIdentifier("activity_leb_pro_hub", "layout", packageName)
-                  if (layoutId == 0) {
-                      finish()
-                      return
+                  title = "IA Anime · L.E.B Pro"
+
+                  val ll = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(48, 48, 48, 48)
                   }
-                  setContentView(layoutId)
-                  manager = LebProManager(this)
 
-                  val status = findViewById<TextView>(viewId("tvTierStatus"))
-                  val tier = findViewById<Spinner>(viewId("spTier"))
-                  val highRes = findViewById<Switch>(viewId("swHighRes"))
-                  val dev = findViewById<Switch>(viewId("swDev"))
-                  val diagnostics = findViewById<TextView>(viewId("tvDiagnostics"))
-                  val animations = findViewById<Switch>(viewId("swAnimations"))
-                  val style = findViewById<Spinner>(viewId("spStyle"))
-                  val tone = findViewById<Spinner>(viewId("spTone"))
-                  val aiName = findViewById<EditText>(viewId("etAiName"))
-                  val aiPersonality = findViewById<EditText>(viewId("etAiPersonality"))
-                  val prompt = findViewById<EditText>(viewId("etPrompt"))
-                  val response = findViewById<TextView>(viewId("tvAiResponse"))
-                  val save = findViewById<Button>(viewId("btnSaveAi"))
-                  val ask = findViewById<Button>(viewId("btnAskAi"))
+                  val output = TextView(this).apply {
+                      text = "Elegí un estilo y preguntá algo musical 🎧"
+                      textSize = 15f
+                      setPadding(0, 24, 0, 24)
+                  }
 
-                  val tiers = MembershipTier.values()
-                  val styles = AnimeStyle.values()
-                  val tones = AiPersonalityTone.values()
-
-                  fun <T> adapter(items: List<T>): ArrayAdapter<T> =
-                      ArrayAdapter(this, android.R.layout.simple_spinner_item, items).also {
-                          it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+                  fun styleBtn(label: String, s: AnimeAI.Style): Button =
+                      Button(this).apply {
+                          text = label
+                          setOnClickListener {
+                              style = s
+                              output.text = "Estilo: ${s.label}"
+                          }
                       }
 
-                  tier.adapter = adapter(tiers.map { "${it.label} (${it.priceText})" })
-                  style.adapter = adapter(styles.map { "${it.displayName} — ${it.description}" })
-                  tone.adapter = adapter(tones.map { it.title })
+                  ll.addView(styleBtn("Shonen 🔥", AnimeAI.Style.SHONEN))
+                  ll.addView(styleBtn("Seinen 🌑", AnimeAI.Style.SEINEN))
+                  ll.addView(styleBtn("Slice of Life 🌸", AnimeAI.Style.SLICE_OF_LIFE))
 
-                  fun refresh() {
-                      status.text = "Plan actual: ${manager.currentTier.label} (${manager.currentTier.priceText}) • ${manager.appVersionName}"
-                      highRes.isEnabled = manager.hasProAccess
-                      dev.isEnabled = manager.hasProAccess
-                      animations.isEnabled = manager.hasProPlusAccess
-                      style.isEnabled = manager.hasProPlusAccess
-                      tone.isEnabled = manager.hasProPlusAccess
-                      aiName.isEnabled = manager.hasProPlusAccess
-                      aiPersonality.isEnabled = manager.hasProPlusAccess
-                      save.isEnabled = manager.hasProPlusAccess
-                      prompt.isEnabled = manager.hasProPlusAccess
-                      ask.isEnabled = manager.hasProPlusAccess
-                      highRes.isChecked = manager.highResAudio
-                      dev.isChecked = manager.devMode
-                      animations.isChecked = manager.animations
-                      diagnostics.visibility = if (manager.devMode) View.VISIBLE else View.GONE
-                      diagnostics.text = manager.diagnostics()
-                      style.setSelection(styles.indexOf(manager.animeStyle).coerceAtLeast(0))
-                      tone.setSelection(tones.indexOf(manager.tone).coerceAtLeast(0))
-                      aiName.setText(manager.customAiName)
-                      aiPersonality.setText(manager.customAiPersonality)
+                  val input = EditText(this).apply {
+                      hint = "Ej: recomendame openings para entrenar"
                   }
+                  val send = Button(this).apply { text = "Preguntar a la IA" }
 
-                  tier.setSelection(tiers.indexOf(manager.currentTier).coerceAtLeast(0))
-                  tier.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-                      override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                          manager.currentTier = tiers[position]
-                          refresh()
+                  send.setOnClickListener {
+                      val q = input.text.toString().trim()
+                      if (q.isEmpty()) return@setOnClickListener
+                      output.text = "⏳ Consultando IA (${style.label})..."
+                      lifecycleScope.launch {
+                          val r = AnimeAI.ask(this@AnimeAIActivity, style, q)
+                          output.text = r
                       }
-                      override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
                   }
 
-                  highRes.setOnCheckedChangeListener { _, checked -> manager.highResAudio = checked; refresh() }
-                  dev.setOnCheckedChangeListener { _, checked -> manager.devMode = checked; refresh() }
-                  animations.setOnCheckedChangeListener { _, checked -> manager.animations = checked }
-                  style.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-                      override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                          manager.animeStyle = styles[position]
-                      }
-                      override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
-                  }
-                  tone.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
-                      override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: View?, position: Int, id: Long) {
-                          manager.tone = tones[position]
-                      }
-                      override fun onNothingSelected(parent: android.widget.AdapterView<*>?) = Unit
-                  }
+                  ll.addView(input)
+                  ll.addView(send)
+                  ll.addView(output)
 
-                  save.setOnClickListener {
-                      manager.customAiName = aiName.text.toString()
-                      manager.customAiPersonality = aiPersonality.text.toString()
-                      response.text = "IA personalizada guardada: ${manager.customAiName}"
-                  }
-                  ask.setOnClickListener { response.text = manager.askAi(prompt.text.toString()) }
-
-                  refresh()
+                  setContentView(ScrollView(this).apply { addView(ll) })
               }
           }
-          KOTLIN
+          EOF
+          sed -i "s|__PKG__|$PKG|g" "$SRC_DIR/AnimeAIActivity.kt"
 
-          # Register the Pro Hub activity without replacing the app's existing launcher activity.
-          python3 - "$SRC/AndroidManifest.xml" <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
+          # ── 5) Mejora UI: tema oscuro Pro + strings ─────────────
+          cat > "$RES_DIR/values/leb_pro.xml" <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="leb_bg">#0B0B12</color>
+              <color name="leb_surface">#161624</color>
+              <color name="leb_accent">#7C4DFF</color>
+              <color name="leb_accent2">#00E5FF</color>
+              <color name="leb_text">#F2F2FF</color>
+              <color name="leb_text_dim">#9AA0B4</color>
 
-          path = sys.argv[1]
-          android = "{http://schemas.android.com/apk/res/android}"
-          ET.register_namespace("android", "http://schemas.android.com/apk/res/android")
-          tree = ET.parse(path)
-          root = tree.getroot()
-          app = root.find("application")
-          if app is None:
-              raise SystemExit("AndroidManifest.xml no contiene <application>")
+              <string name="leb_pro_title">L.E.B-M Pro</string>
+              <string name="leb_ai_title">IA Anime</string>
+              <string name="leb_style_shonen">Shonen</string>
+              <string name="leb_style_seinen">Seinen</string>
+              <string name="leb_style_sol">Slice of Life</string>
+          </resources>
+          EOF
 
-          activity_name = "com.leb.profeatures.LebProHubActivity"
-          exists = any(a.get(android + "name") == activity_name for a in app.findall("activity"))
-          if not exists:
-              activity = ET.SubElement(app, "activity")
-              activity.set(android + "name", activity_name)
-              # A second launcher entry makes the Pro Hub reachable without editing
-              # the unknown main-activity source. It uses the app's existing launcher icon.
-              activity.set(android + "exported", "true")
-              intent_filter = ET.SubElement(activity, "intent-filter")
-              action = ET.SubElement(intent_filter, "action")
-              action.set(android + "name", "android.intent.action.MAIN")
-              category = ET.SubElement(intent_filter, "category")
-              category.set(android + "name", "android.intent.category.LAUNCHER")
+          # ── 6) Registrar activities en AndroidManifest ──────────
+          MANIFEST="$APP_DIR/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST" ]; then
+            python3 - "$MANIFEST" "$PKG" <<'PY'
+          import sys, re
+          path, pkg = sys.argv[1], sys.argv[2]
+          xml = open(path, encoding="utf-8").read()
+          entries = f'''
+              <activity android:name="{pkg}.ProSettingsActivity" android:exported="false" />
+              <activity android:name="{pkg}.AnimeAIActivity" android:exported="false" />
+          '''
+          if f"{pkg}.ProSettingsActivity" not in xml:
+              xml = xml.replace("</application>", entries + "\n    </application>")
+              open(path, "w", encoding="utf-8").write(xml)
+              print("Manifest actualizado")
+          else:
+              print("Manifest ya tenía las activities")
+          PY
+          else
+            echo "WARN: no hay AndroidManifest.xml"
+          fi
 
-          tree.write(path, encoding="utf-8", xml_declaration=True)
+          # ── 7) BuildConfig: campos IA + permiso INTERNET ────────
+          BUILD_GRADLE="$APP_DIR/build.gradle"
+          [ -f "$BUILD_GRADLE" ] || BUILD_GRADLE="$APP_DIR/build.gradle.kts"
+          python3 - "$BUILD_GRADLE" "$MANIFEST" <<'PY'
+          import sys, re, pathlib
+          gradle_path, manifest_path = sys.argv[1], sys.argv[2]
+          p = pathlib.Path(gradle_path)
+          txt = p.read_text(encoding="utf-8")
+
+          # buildConfig = true si es Kotlin DSL o si no existe
+          if gradle_path.endswith(".kts"):
+              if "buildConfig = true" not in txt:
+                  txt = txt.replace("buildFeatures {", "buildFeatures {\n        buildConfig = true")
+                  if "buildConfig = true" not in txt:
+                      txt = txt.replace("android {", "android {\n    buildFeatures { buildConfig = true }", 1)
+          else:
+              if "buildConfig true" not in txt:
+                  txt = txt.replace("buildFeatures {", "buildFeatures {\n        buildConfig true")
+                  if "buildConfig true" not in txt:
+                      txt = txt.replace("android {", "android {\n    buildFeatures { buildConfig true }", 1)
+
+          # defaultConfig: campos IA
+          token = "${PRO_AI_TOKEN:-}"
+          block = f'''
+              buildConfigField "String", "PRO_AI_TOKEN", "\\"{token}\\""
+              buildConfigField "String", "PRO_AI_MODEL", "\\"meta-llama/Meta-Llama-3.1-8B-Instruct\\""
+          '''
+          if "PRO_AI_TOKEN" not in txt:
+              txt = re.sub(r"(defaultConfig\s*\{)", r"\1" + block, txt, count=1)
+
+          p.write_text(txt, encoding="utf-8")
+
+          # Manifest: permiso INTERNET
+          m = pathlib.Path(manifest_path)
+          mx = m.read_text(encoding="utf-8")
+          if "android.permission.INTERNET" not in mx:
+              mx = mx.replace("<application", '<uses-permission android:name="android.permission.INTERNET" />\n    <application', 1)
+              m.write_text(mx, encoding="utf-8")
+          print("BuildConfig + INTERNET OK")
           PY
 
-          echo "Se añadieron los archivos del módulo Pro Hub 1.7-beta."
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.7'
+          echo "✅ Inyección Pro/IA/UI completada"
 
       - name: Build debug APK
         shell: bash
         run: |
           set -euo pipefail
-          cd "$PROJECT"
-          printf 'sdk.dir=%s\n' "$ANDROID_HOME" > local.properties
+          echo "sdk.dir=${ANDROID_HOME}" > "${PROJECT}/local.properties"
+          cd "${PROJECT}"
+          gradle assembleDebug --no-daemon --stacktrace
 
-          if [ -f ./gradlew ]; then
-            chmod +x ./gradlew
-            ./gradlew :app:assembleDebug --no-daemon --stacktrace
-          else
-            gradle :app:assembleDebug --no-daemon --stacktrace
-          fi
-
-      - name: Collect and verify APK
+      - name: Collect APK
         shell: bash
         run: |
           set -euo pipefail
-          APK="$(find "$PROJECT/app/build/outputs/apk" -type f -name '*.apk' | sort | head -n 1 || true)"
+          APK=$(find "${PROJECT}" -path "*/outputs/apk/debug/*.apk" | head -n 1)
           if [ -z "$APK" ]; then
-            echo "::error::No se encontró el APK después de compilar."
+            echo "No se genero el APK"
+            find "${PROJECT}" -name "*.apk" || true
             exit 1
           fi
-          cp "$APK" "$GITHUB_WORKSPACE/L.E.B-M-1.7-beta.apk"
-          unzip -t "$GITHUB_WORKSPACE/L.E.B-M-1.7-beta.apk"
-          ls -lh "$GITHUB_WORKSPACE/L.E.B-M-1.7-beta.apk"
+          cp "$APK" "L.E.B-M-1.5-beta.apk"
+          ls -lh "L.E.B-M-1.5-beta.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: L.E.B-M-1.7-beta
-          path: L.E.B-M-1.7-beta.apk
+          name: L.E.B-M-1.5-beta
+          path: L.E.B-M-1.5-beta.apk
           if-no-files-found: error
-          retention-days: 14
