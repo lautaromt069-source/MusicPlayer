@@ -44,7 +44,7 @@ jobs:
           ls -la "$PROJECT"
           ls -la "$PROJECT/app" || true
 
-      - name: Update app icon and inject Pro ($3), Pro+ ($5), Anime AI, Custom AI & Dev Mode
+      - name: Inject Pro ($3), Pro+ ($5), Anime AI, Custom AI, Dev Mode & Icon
         shell: bash
         run: |
           set -euo pipefail
@@ -52,25 +52,59 @@ jobs:
           export SRC_ROOT
           mkdir -p "${SRC_ROOT}/java/com/leb/profeatures" "${SRC_ROOT}/res/layout" "${SRC_ROOT}/res/anim"
 
-          ICON_URL="https://images.stockcake.com/public/c/9/8/c982159e-388f-4099-83bd-ffa21f7191bc_large/neon-musical-vibes-stockcake.jpg"
-          curl -fsSL -o /tmp/leb_icon_src.jpg "$ICON_URL"
-
-          for density in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
-            mkdir -p "${SRC_ROOT}/res/mipmap-${density}"
-          done
+          ICON_URL="https://encrypted-tbn1.gstatic.com/licensed-image?q=tbn:ANd9GcQioRZFHG8GZT52oPpz7pP51dpWamWLblkVk84cKN2O9xXbNhULp1Q4KG_5d16WBLWB6BnTBWg7vGYB6Ng"
+          curl -fsSL -o /tmp/leb_icon_raw.jpg "$ICON_URL"
 
           python3 - << 'PYEOF'
-          import os, pathlib, shutil, xml.etree.ElementTree as ET
+          import os, pathlib, shutil, struct, zlib, xml.etree.ElementTree as ET
 
           src_root = pathlib.Path(os.environ["SRC_ROOT"])
-          icon_src = pathlib.Path("/tmp/leb_icon_src.jpg")
+          raw_img = pathlib.Path("/tmp/leb_icon_raw.jpg")
 
-          if icon_src.exists():
-              for density in ["mipmap-mdpi", "mipmap-hdpi", "mipmap-xhdpi", "mipmap-xxhdpi", "mipmap-xxxhdpi"]:
-                  target_dir = src_root / "res" / density
-                  target_dir.mkdir(parents=True, exist_ok=True)
-                  for name in ["ic_launcher.png", "ic_launcher_round.png", "ic_launcher_foreground.png"]:
-                      shutil.copyfile(icon_src, target_dir / name)
+          def make_solid_png(width: int, height: int, r: int, g: int, b: int) -> bytes:
+              def chunk(tag: bytes, data: bytes) -> bytes:
+                  crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+                  return struct.pack("!I", len(data)) + tag + data + struct.pack("!I", crc)
+              ihdr = struct.pack("!IIBBBBB", width, height, 8, 2, 0, 0, 0)
+              row = bytes([r, g, b]) * width
+              raw_data = b"".join(b"\x00" + row for _ in range(height))
+              idat = zlib.compress(raw_data, level=6)
+              return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+
+          png_bytes = None
+          try:
+              from PIL import Image
+              with Image.open(raw_img) as im:
+                  rgba = im.convert("RGBA")
+                  w, h = rgba.size
+                  side = min(w, h)
+                  left = (w - side) // 2
+                  top = (h - side) // 2
+                  square = rgba.crop((left, top, left + side, top + side)).resize((512, 512), Image.Resampling.LANCZOS)
+                  import io
+                  buf = io.BytesIO()
+                  square.save(buf, format="PNG")
+                  png_bytes = buf.getvalue()
+          except Exception:
+              png_bytes = None
+
+          if png_bytes is None:
+              png_bytes = make_solid_png(192, 192, 18, 185, 214)
+
+          for anydpi in ["mipmap-anydpi-v26", "mipmap-anydpi"]:
+              d = src_root / "res" / anydpi
+              if d.exists():
+                  shutil.rmtree(d)
+
+          for density in ["mipmap-mdpi", "mipmap-hdpi", "mipmap-xhdpi", "mipmap-xxhdpi", "mipmap-xxxhdpi"]:
+              target_dir = src_root / "res" / density
+              target_dir.mkdir(parents=True, exist_ok=True)
+              for xml_name in ["ic_launcher.xml", "ic_launcher_round.xml"]:
+                  xml_file = target_dir / xml_name
+                  if xml_file.exists():
+                      xml_file.unlink()
+              for png_name in ["ic_launcher.png", "ic_launcher_round.png", "ic_launcher_foreground.png"]:
+                  (target_dir / png_name).write_bytes(png_bytes)
 
           manifest_path = src_root / "AndroidManifest.xml"
           if manifest_path.exists():
