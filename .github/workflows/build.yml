@@ -49,6 +49,7 @@ jobs:
         run: |
           set -euo pipefail
           SRC_ROOT="${PROJECT}/app/src/main"
+          export SRC_ROOT
           mkdir -p "${SRC_ROOT}/java/com/leb/profeatures" "${SRC_ROOT}/res/layout"
 
           cat << 'EOF' > "${SRC_ROOT}/java/com/leb/profeatures/LebProManager.kt"
@@ -56,10 +57,14 @@ jobs:
 
           import android.content.Context
 
-          enum class AnimeStyle(val displayName: String, val modeTag: String) {
-              SHONEN("Shonen", "Energía, foco y motivación"),
-              SLICE_OF_LIFE("Slice of Life", "Calma, cercanía y ambiente cotidiano"),
-              CYBERPUNK_SCIFI("Cyberpunk / Sci-Fi", "Precisión técnica y estilo futurista")
+          enum class AnimeStyle(
+              val displayName: String,
+              val modeTag: String,
+              val accentHex: Long
+          ) {
+              SHONEN("Shonen", "Energía, foco y motivación", 0xFFE53935),
+              SLICE_OF_LIFE("Slice of Life", "Calma, cercanía y ambiente cotidiano", 0xFF43A047),
+              CYBERPUNK_SCIFI("Cyberpunk / Sci-Fi", "Precisión técnica y estilo futurista", 0xFF00ACC1)
           }
 
           class LebProManager(context: Context) {
@@ -97,6 +102,14 @@ jobs:
                       }
                   }
 
+              var autoAnimeThemeSync: Boolean
+                  get() = isProEnabled && prefs.getBoolean("auto_anime_theme_sync", true)
+                  set(value) {
+                      if (isProEnabled) {
+                          prefs.edit().putBoolean("auto_anime_theme_sync", value).apply()
+                      }
+                  }
+
               fun askAnimeAi(prompt: String): String {
                   if (!isProEnabled) {
                       return "Función bloqueada: activa el modo Pro para usar la IA de Shonen, Slice of Life o Cyberpunk / Sci-Fi."
@@ -116,7 +129,7 @@ jobs:
                   if (!isProEnabled) {
                       return "Opciones de desarrollador disponibles solo en modo Pro."
                   }
-                  return "PRO=true | ANIME=${selectedAnimeStyle.name} | DEV=$isDevModeEnabled | HIRES=$highResAudioPro"
+                  return "PRO=true | ANIME=${selectedAnimeStyle.name} | DEV=$isDevModeEnabled | HIRES=$highResAudioPro | SYNC=$autoAnimeThemeSync"
               }
           }
           EOF
@@ -124,8 +137,10 @@ jobs:
           cat << 'EOF' > "${SRC_ROOT}/res/layout/activity_leb_pro_hub.xml"
           <?xml version="1.0" encoding="utf-8"?>
           <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+              android:id="@+id/scrollProRoot"
               android:layout_width="match_parent"
               android:layout_height="match_parent"
+              android:background="#121212"
               android:padding="16dp">
 
               <LinearLayout
@@ -138,8 +153,18 @@ jobs:
                       android:layout_width="match_parent"
                       android:layout_height="wrap_content"
                       android:text="L.E.B-M 1.5-beta • Pro &amp; IA Anime"
+                      android:textColor="#FFFFFF"
                       android:textSize="22sp"
                       android:textStyle="bold"
+                      android:paddingBottom="6dp" />
+
+                  <TextView
+                      android:id="@+id/tvProStatusBanner"
+                      android:layout_width="match_parent"
+                      android:layout_height="wrap_content"
+                      android:text="Estado: Modo Estándar (Pro desactivado)"
+                      android:textColor="#BDBDBD"
+                      android:textSize="14sp"
                       android:paddingBottom="12dp" />
 
                   <Switch
@@ -147,50 +172,67 @@ jobs:
                       android:layout_width="match_parent"
                       android:layout_height="wrap_content"
                       android:text="Activar / Desactivar Modo Pro"
-                      android:paddingBottom="12dp" />
+                      android:textColor="#FFFFFF"
+                      android:paddingBottom="14dp" />
 
                   <LinearLayout
                       android:id="@+id/proSectionContainer"
                       android:layout_width="match_parent"
                       android:layout_height="wrap_content"
-                      android:orientation="vertical">
+                      android:background="#1E1E1E"
+                      android:orientation="vertical"
+                      android:padding="14dp">
 
                       <TextView
                           android:layout_width="match_parent"
                           android:layout_height="wrap_content"
                           android:text="Opciones Pro"
+                          android:textColor="#FFFFFF"
                           android:textSize="17sp"
                           android:textStyle="bold"
-                          android:paddingTop="8dp"
-                          android:paddingBottom="6dp" />
+                          android:paddingBottom="8dp" />
 
                       <Switch
                           android:id="@+id/switchProHighRes"
                           android:layout_width="match_parent"
                           android:layout_height="wrap_content"
                           android:text="Perfil de audio Pro avanzado"
-                          android:paddingBottom="8dp" />
+                          android:textColor="#E0E0E0"
+                          android:paddingBottom="6dp" />
+
+                      <Switch
+                          android:id="@+id/switchAutoAnimeTheme"
+                          android:layout_width="match_parent"
+                          android:layout_height="wrap_content"
+                          android:text="Sincronizar acento visual con estilo Anime"
+                          android:textColor="#E0E0E0"
+                          android:paddingBottom="12dp" />
 
                       <TextView
                           android:layout_width="match_parent"
                           android:layout_height="wrap_content"
                           android:text="IA Anime (Solo Pro: Shonen / Slice of Life / Cyberpunk Sci-Fi)"
+                          android:textColor="#FFFFFF"
                           android:textSize="16sp"
                           android:textStyle="bold"
-                          android:paddingTop="6dp"
+                          android:paddingTop="4dp"
                           android:paddingBottom="6dp" />
 
                       <Spinner
                           android:id="@+id/spinnerAnimeStyle"
                           android:layout_width="match_parent"
                           android:layout_height="wrap_content"
-                          android:paddingBottom="8dp" />
+                          android:background="#2A2A2A"
+                          android:padding="6dp"
+                          android:layout_marginBottom="8dp" />
 
                       <EditText
                           android:id="@+id/etAnimePrompt"
                           android:layout_width="match_parent"
                           android:layout_height="wrap_content"
                           android:hint="Escribe un mood o actividad (ej. entrenar, estudiar, noche)"
+                          android:textColor="#FFFFFF"
+                          android:textColorHint="#9E9E9E"
                           android:paddingBottom="8dp" />
 
                       <Button
@@ -204,13 +246,15 @@ jobs:
                           android:layout_width="match_parent"
                           android:layout_height="wrap_content"
                           android:text="Selecciona un estilo de anime y consulta la IA."
-                          android:paddingTop="8dp"
-                          android:paddingBottom="14dp" />
+                          android:textColor="#F5F5F5"
+                          android:paddingTop="10dp"
+                          android:paddingBottom="16dp" />
 
                       <TextView
                           android:layout_width="match_parent"
                           android:layout_height="wrap_content"
                           android:text="Opciones de Desarrollador (Solo Pro)"
+                          android:textColor="#FFFFFF"
                           android:textSize="17sp"
                           android:textStyle="bold"
                           android:paddingTop="6dp"
@@ -220,14 +264,16 @@ jobs:
                           android:id="@+id/switchDevOptions"
                           android:layout_width="match_parent"
                           android:layout_height="wrap_content"
-                          android:text="Habilitar herramientas de desarrollador" />
+                          android:text="Habilitar herramientas de desarrollador"
+                          android:textColor="#E0E0E0" />
 
                       <TextView
                           android:id="@+id/tvDevInfo"
                           android:layout_width="match_parent"
                           android:layout_height="wrap_content"
                           android:text=""
-                          android:paddingTop="6dp" />
+                          android:textColor="#80DEEA"
+                          android:paddingTop="8dp" />
                   </LinearLayout>
 
               </LinearLayout>
@@ -237,6 +283,7 @@ jobs:
           cat << 'EOF' > "${SRC_ROOT}/java/com/leb/profeatures/LebProHubActivity.kt"
           package com.leb.profeatures
 
+          import android.graphics.Color
           import android.os.Bundle
           import android.view.View
           import android.widget.AdapterView
@@ -261,6 +308,9 @@ jobs:
 
                   proManager = LebProManager(this)
 
+                  val tvStatusBanner = findViewById<TextView>(
+                      resources.getIdentifier("tvProStatusBanner", "id", packageName)
+                  )
                   val switchPro = findViewById<Switch>(
                       resources.getIdentifier("switchProMode", "id", packageName)
                   )
@@ -269,6 +319,9 @@ jobs:
                   )
                   val switchHighRes = findViewById<Switch>(
                       resources.getIdentifier("switchProHighRes", "id", packageName)
+                  )
+                  val switchAutoTheme = findViewById<Switch>(
+                      resources.getIdentifier("switchAutoAnimeTheme", "id", packageName)
                   )
                   val spinnerAnime = findViewById<Spinner>(
                       resources.getIdentifier("spinnerAnimeStyle", "id", packageName)
@@ -298,14 +351,32 @@ jobs:
                   spinnerAnime.adapter = adapter
                   spinnerAnime.setSelection(styles.indexOf(proManager.selectedAnimeStyle).coerceAtLeast(0))
 
+                  fun applyAnimeAccent() {
+                      if (proManager.isProEnabled && proManager.autoAnimeThemeSync) {
+                          val colorInt = proManager.selectedAnimeStyle.accentHex.toInt()
+                          btnAskAi.setBackgroundColor(colorInt)
+                          btnAskAi.setTextColor(Color.WHITE)
+                      } else {
+                          btnAskAi.setBackgroundColor(Color.parseColor("#37474F"))
+                          btnAskAi.setTextColor(Color.WHITE)
+                      }
+                  }
+
                   fun refreshProVisibility() {
                       val active = proManager.isProEnabled
                       switchPro.isChecked = active
+                      tvStatusBanner.text = if (active) {
+                          "Estado: L.E.B-M Pro ACTIVO (${proManager.selectedAnimeStyle.displayName})"
+                      } else {
+                          "Estado: Modo Estándar (Pro desactivado)"
+                      }
                       proContainer.visibility = if (active) View.VISIBLE else View.GONE
                       switchHighRes.isChecked = proManager.highResAudioPro
+                      switchAutoTheme.isChecked = proManager.autoAnimeThemeSync
                       switchDev.isChecked = proManager.isDevModeEnabled
                       tvDevInfo.visibility = if (active && proManager.isDevModeEnabled) View.VISIBLE else View.GONE
                       tvDevInfo.text = proManager.getDeveloperDiagnostics()
+                      applyAnimeAccent()
                   }
 
                   switchPro.setOnCheckedChangeListener { _, checked ->
@@ -315,6 +386,11 @@ jobs:
 
                   switchHighRes.setOnCheckedChangeListener { _, checked ->
                       proManager.highResAudioPro = checked
+                      refreshProVisibility()
+                  }
+
+                  switchAutoTheme.setOnCheckedChangeListener { _, checked ->
+                      proManager.autoAnimeThemeSync = checked
                       refreshProVisibility()
                   }
 
@@ -342,9 +418,10 @@ jobs:
           EOF
 
           python3 - << 'PYEOF'
-          import pathlib, xml.etree.ElementTree as ET
+          import os, pathlib, xml.etree.ElementTree as ET
 
-          manifest_path = pathlib.Path("${SRC_ROOT}") / "AndroidManifest.xml"
+          src_root = pathlib.Path(os.environ["SRC_ROOT"])
+          manifest_path = src_root / "AndroidManifest.xml"
           if manifest_path.exists():
               ET.register_namespace("android", "http://schemas.android.com/apk/res/android")
               tree = ET.parse(manifest_path)
