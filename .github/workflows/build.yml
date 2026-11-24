@@ -7,6 +7,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -14,76 +16,96 @@ jobs:
       - name: Unpack project
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
           if [ -f MusicPlayer.zip ]; then
+            echo "Descomprimiendo MusicPlayer.zip..."
             unzip -q -o MusicPlayer.zip
           fi
-          if [ -f ./settings.gradle ]; then
-            PROJECT="."
-          elif [ -f ./MusicPlayer/settings.gradle ]; then
-            PROJECT="./MusicPlayer"
-          elif [ -f ./leb/settings.gradle ]; then
-            PROJECT="./leb"
-          else
-            FOUND=$(find . -name settings.gradle | grep -v "/\.git/" | head -n 1 || true)
-            if [ -z "$FOUND" ]; then
-              echo "No se encontro settings.gradle"
-              find . -maxdepth 4 -type f | head -50
-              exit 1
+          PROJECT=""
+          for candidate in "." "./MusicPlayer" "./leb" "./MusicPlayer/MusicPlayer"; do
+            if [ -f "$candidate/settings.gradle" ] || [ -f "$candidate/settings.gradle.kts" ]; then
+              PROJECT="$candidate"
+              break
             fi
-            PROJECT=$(dirname "$FOUND")
+          done
+          if [ -z "$PROJECT" ]; then
+            FOUND=$(find . -name "settings.gradle" -o -name "settings.gradle.kts" | grep -v "/\.git/" | head -n 1 || true)
+            if [ -n "$FOUND" ]; then
+              PROJECT=$(dirname "$FOUND")
+            fi
+          fi
+          if [ -z "$PROJECT" ]; then
+            echo "ERROR: no se encontro settings.gradle"
+            find . -maxdepth 5 -type f | head -80
+            exit 1
           fi
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
-          echo "Proyecto en: $PROJECT"
+          echo "Proyecto: $PROJECT"
+          ls -la "$PROJECT"
+          ls -la "$PROJECT/app" || true
 
-      - name: JDK 17
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: "temurin"
           java-version: "17"
 
-      - name: Install Android SDK (manual)
+      - name: Install Android command-line tools
         shell: bash
         run: |
-          set -e
-          SDK="$HOME/android-sdk"
-          mkdir -p "$SDK/cmdline-tools"
-          curl -fsSL -o /tmp/cmdtools.zip \
-            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip -q /tmp/cmdtools.zip -d "$SDK/cmdline-tools"
-          rm -rf "$SDK/cmdline-tools/latest"
-          mv "$SDK/cmdline-tools/cmdline-tools" "$SDK/cmdline-tools/latest"
-          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
-          echo "$SDK/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+          set -euo pipefail
+          SDK_ROOT="${HOME}/android-sdk"
+          rm -rf "$SDK_ROOT"
+          mkdir -p "$SDK_ROOT/cmdline-tools"
+          curl -fsSL -o /tmp/cmdline-tools.zip \
+            "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+          unzip -q /tmp/cmdline-tools.zip -d "$SDK_ROOT/cmdline-tools"
+          mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
+          {
+            echo "ANDROID_HOME=$SDK_ROOT"
+            echo "ANDROID_SDK_ROOT=$SDK_ROOT"
+          } >> "$GITHUB_ENV"
+          {
+            echo "$SDK_ROOT/cmdline-tools/latest/bin"
+            echo "$SDK_ROOT/platform-tools"
+          } >> "$GITHUB_PATH"
 
-      - name: Accept licenses and install platforms
+      - name: Install SDK packages
         shell: bash
         run: |
-          set -e
-          yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
-          sdkmanager --sdk_root="$ANDROID_HOME" \
+          set -euo pipefail
+          yes | sdkmanager --sdk_root="${ANDROID_HOME}" --licenses > /tmp/sdk-licenses.txt || true
+          sdkmanager --sdk_root="${ANDROID_HOME}" \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0"
+          sdkmanager --sdk_root="${ANDROID_HOME}" --list_installed | head -40
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.7"
 
-      - name: Build APK
+      - name: Build debug APK
         shell: bash
         run: |
-          set -e
-          echo "sdk.dir=$ANDROID_HOME" > "$PROJECT/local.properties"
-          gradle assembleDebug --stacktrace
-        working-directory: ${{ env.PROJECT }}
+          set -euo pipefail
+          echo "sdk.dir=${ANDROID_HOME}" > "${PROJECT}/local.properties"
+          cd "${PROJECT}"
+          gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Copy APK
+      - name: Collect APK
         shell: bash
-        run: cp "${PROJECT}/app/build/outputs/apk/debug/app-debug.apk" L.E.B-M-1.5-beta.apk
+        run: |
+          set -euo pipefail
+          APK=$(find "${PROJECT}" -path "*/outputs/apk/debug/*.apk" | head -n 1)
+          if [ -z "$APK" ]; then
+            echo "No se genero el APK"
+            find "${PROJECT}" -name "*.apk" || true
+            exit 1
+          fi
+          cp "$APK" "L.E.B-M-1.5-beta.apk"
+          ls -lh "L.E.B-M-1.5-beta.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
