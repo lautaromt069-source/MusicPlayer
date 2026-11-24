@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -13,757 +16,106 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Unpack project
+      - name: Unpack project and locate Gradle project
         shell: bash
         run: |
           set -euo pipefail
-          if [ -f MusicPlayer.zip ]; then
+
+          if [ -f "MusicPlayer.zip" ]; then
             echo "Descomprimiendo MusicPlayer.zip..."
-            unzip -q -o MusicPlayer.zip
+            unzip -q -o "MusicPlayer.zip" -d ./unpacked
           fi
+
           PROJECT=""
-          for candidate in "." "./MusicPlayer" "./leb" "./MusicPlayer/MusicPlayer"; do
-            if [ -f "$candidate/settings.gradle" ] || [ -f "$candidate/settings.gradle.kts" ]; then
+          for candidate in "." "./unpacked" "./MusicPlayer" "./leb" \
+                           "./unpacked/MusicPlayer" "./MusicPlayer/MusicPlayer"; do
+            if [ -f "$candidate/settings.gradle" ] || \
+               [ -f "$candidate/settings.gradle.kts" ]; then
               PROJECT="$candidate"
               break
             fi
           done
+
           if [ -z "$PROJECT" ]; then
-            FOUND=$(find . -name "settings.gradle" -o -name "settings.gradle.kts" | grep -v "/\.git/" | head -n 1 || true)
+            FOUND="$(find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
+              -not -path '*/.git/*' -not -path '*/.gradle/*' | head -n 1 || true)"
             if [ -n "$FOUND" ]; then
-              PROJECT=$(dirname "$FOUND")
+              PROJECT="$(dirname "$FOUND")"
             fi
           fi
+
           if [ -z "$PROJECT" ]; then
-            echo "ERROR: no se encontro settings.gradle"
-            find . -maxdepth 5 -type f | head -80
+            echo "::error::No se encontró settings.gradle ni settings.gradle.kts."
+            echo "Comprueba que MusicPlayer.zip contiene un proyecto Android completo."
+            find . -maxdepth 5 -type f | head -100
             exit 1
           fi
+
+          PROJECT="$(cd "$PROJECT" && pwd)"
           echo "PROJECT=$PROJECT" >> "$GITHUB_ENV"
-          echo "Proyecto: $PROJECT"
+          echo "Proyecto encontrado: $PROJECT"
           ls -la "$PROJECT"
-          ls -la "$PROJECT/app" || true
 
-      - name: Inject 1.6-beta Pro ($3), Pro+ ($5), Anime AI, Custom AI, Dev Mode & Icon
-        shell: bash
-        run: |
-          set -euo pipefail
-          SRC_ROOT="${PROJECT}/app/src/main"
-          export SRC_ROOT
-          mkdir -p "${SRC_ROOT}/java/com/leb/profeatures" "${SRC_ROOT}/res/layout" "${SRC_ROOT}/res/anim"
-
-          ICON_URL="https://encrypted-tbn1.gstatic.com/licensed-image?q=tbn:ANd9GcSk2POlGfuJx_7Op8TLq-BKJrzgE6Je-ph3fpXNRHR_7BIr-KE6mFavESmgzI_FJXZUOuxnFGjIh7BFGWA"
-          curl -fsSL -o /tmp/leb_16_icon_src.jpg "$ICON_URL"
-
-          python3 - << 'PYEOF'
-          import io, os, pathlib, shutil, struct, zlib, xml.etree.ElementTree as ET
-
-          src_root = pathlib.Path(os.environ["SRC_ROOT"])
-          raw_img = pathlib.Path("/tmp/leb_16_icon_src.jpg")
-
-          def make_solid_png(width: int, height: int, r: int, g: int, b: int) -> bytes:
-              def chunk(tag: bytes, data: bytes) -> bytes:
-                  crc = zlib.crc32(tag + data) & 0xFFFFFFFF
-                  return struct.pack("!I", len(data)) + tag + data + struct.pack("!I", crc)
-              ihdr = struct.pack("!IIBBBBB", width, height, 8, 2, 0, 0, 0)
-              row = bytes([r, g, b]) * width
-              raw_data = b"".join(b"\x00" + row for _ in range(height))
-              idat = zlib.compress(raw_data, level=6)
-              return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
-
-          png_bytes = None
-          try:
-              from PIL import Image
-              with Image.open(raw_img) as im:
-                  rgba = im.convert("RGBA")
-                  w, h = rgba.size
-                  side = min(w, h)
-                  left = (w - side) // 2
-                  top = (h - side) // 2
-                  square = rgba.crop((left, top, left + side, top + side)).resize((512, 512), Image.Resampling.LANCZOS)
-                  buf = io.BytesIO()
-                  square.save(buf, format="PNG")
-                  png_bytes = buf.getvalue()
-          except Exception:
-              png_bytes = None
-
-          if png_bytes is None:
-              png_bytes = make_solid_png(192, 192, 0, 229, 255)
-
-          for anydpi in ["mipmap-anydpi-v26", "mipmap-anydpi"]:
-              d = src_root / "res" / anydpi
-              if d.exists():
-                  shutil.rmtree(d)
-
-          for density in ["mipmap-mdpi", "mipmap-hdpi", "mipmap-xhdpi", "mipmap-xxhdpi", "mipmap-xxxhdpi"]:
-              target_dir = src_root / "res" / density
-              target_dir.mkdir(parents=True, exist_ok=True)
-              for xml_name in ["ic_launcher.xml", "ic_launcher_round.xml"]:
-                  xml_file = target_dir / xml_name
-                  if xml_file.exists():
-                      xml_file.unlink()
-              for png_name in ["ic_launcher.png", "ic_launcher_round.png", "ic_launcher_foreground.png"]:
-                  (target_dir / png_name).write_bytes(png_bytes)
-
-          manifest_path = src_root / "AndroidManifest.xml"
-          if manifest_path.exists():
-              ET.register_namespace("android", "http://schemas.android.com/apk/res/android")
-              tree = ET.parse(manifest_path)
-              root = tree.getroot()
-              app = root.find("application")
-              if app is not None:
-                  app.set("{http://schemas.android.com/apk/res/android}icon", "@mipmap/ic_launcher")
-                  app.set("{http://schemas.android.com/apk/res/android}roundIcon", "@mipmap/ic_launcher_round")
-                  exists = any(
-                      act.attrib.get("{http://schemas.android.com/apk/res/android}name") == "com.leb.profeatures.LebProHubActivity"
-                      for act in app.findall("activity")
-                  )
-                  if not exists:
-                      act = ET.SubElement(app, "activity")
-                      act.set("{http://schemas.android.com/apk/res/android}name", "com.leb.profeatures.LebProHubActivity")
-                      act.set("{http://schemas.android.com/apk/res/android}exported", "false")
-                  tree.write(manifest_path, encoding="utf-8", xml_declaration=True)
-          PYEOF
-
-          cat << 'EOF' > "${SRC_ROOT}/res/anim/pro_plus_pulse.xml"
-          <?xml version="1.0" encoding="utf-8"?>
-          <set xmlns:android="http://schemas.android.com/apk/res/android"
-              android:interpolator="@android:anim/accelerate_decelerate_interpolator">
-              <scale
-                  android:duration="340"
-                  android:fromXScale="0.95"
-                  android:fromYScale="0.95"
-                  android:toXScale="1.03"
-                  android:toYScale="1.03"
-                  android:pivotX="50%"
-                  android:pivotY="50%" />
-              <alpha
-                  android:duration="340"
-                  android:fromAlpha="0.7"
-                  android:toAlpha="1.0" />
-          </set>
-          EOF
-
-          cat << 'EOF' > "${SRC_ROOT}/java/com/leb/profeatures/LebProManager.kt"
-          package com.leb.profeatures
-
-          import android.content.Context
-
-          enum class MembershipTier(val label: String, val priceText: String) {
-              FREE("Gratis", "$0"),
-              PRO("Pro", "$3 USD"),
-              PRO_PLUS("Pro+", "$5 USD")
-          }
-
-          enum class AnimeStyle(
-              val displayName: String,
-              val modeTag: String,
-              val accentHex: Long
-          ) {
-              SHONEN("Shonen", "Energía, foco y motivación", 0xFFE53935),
-              SLICE_OF_LIFE("Slice of Life", "Calma, cercanía y ambiente cotidiano", 0xFF43A047),
-              CYBERPUNK_SCIFI("Cyberpunk / Sci-Fi", "Precisión técnica y estilo futurista", 0xFF00ACC1),
-              CUSTOM("Mi IA Personalizada", "Creada por el usuario en Pro+", 0xFF8E24AA)
-          }
-
-          enum class AiPersonalityTone(val title: String) {
-              BALANCED("Equilibrado"),
-              INTENSE("Intenso / Directo"),
-              CALM("Suave / Cercano"),
-              ANALYTICAL("Técnico / Analítico")
-          }
-
-          class LebProManager(context: Context) {
-              private val prefs = context.getSharedPreferences("leb_16_beta_prefs", Context.MODE_PRIVATE)
-
-              val appVersionName: String = "1.6-beta"
-
-              var currentTier: MembershipTier
-                  get() {
-                      val raw = prefs.getString("membership_tier", MembershipTier.FREE.name) ?: MembershipTier.FREE.name
-                      return runCatching { MembershipTier.valueOf(raw) }.getOrDefault(MembershipTier.FREE)
-                  }
-                  set(value) {
-                      prefs.edit().putString("membership_tier", value.name).apply()
-                      if (value == MembershipTier.FREE) {
-                          prefs.edit().putBoolean("dev_mode_enabled", false).apply()
-                      }
-                  }
-
-              val hasProAccess: Boolean
-                  get() = currentTier == MembershipTier.PRO || currentTier == MembershipTier.PRO_PLUS
-
-              val hasProPlusAccess: Boolean
-                  get() = currentTier == MembershipTier.PRO_PLUS
-
-              var selectedAnimeStyle: AnimeStyle
-                  get() {
-                      val raw = prefs.getString("anime_style", AnimeStyle.SHONEN.name) ?: AnimeStyle.SHONEN.name
-                      return runCatching { AnimeStyle.valueOf(raw) }.getOrDefault(AnimeStyle.SHONEN)
-                  }
-                  set(value) = prefs.edit().putString("anime_style", value.name).apply()
-
-              var personalityTone: AiPersonalityTone
-                  get() {
-                      val raw = prefs.getString("ai_tone", AiPersonalityTone.BALANCED.name) ?: AiPersonalityTone.BALANCED.name
-                      return runCatching { AiPersonalityTone.valueOf(raw) }.getOrDefault(AiPersonalityTone.BALANCED)
-                  }
-                  set(value) {
-                      if (hasProPlusAccess) {
-                          prefs.edit().putString("ai_tone", value.name).apply()
-                      }
-                  }
-
-              var customAiName: String
-                  get() = prefs.getString("custom_ai_name", "Nova-1.6") ?: "Nova-1.6"
-                  set(value) {
-                      if (hasProPlusAccess) {
-                          val clean = value.trim().ifEmpty { "Nova-1.6" }
-                          prefs.edit().putString("custom_ai_name", clean).apply()
-                      }
-                  }
-
-              var customAiPersonality: String
-                  get() = prefs.getString("custom_ai_personality", "Guía directo y adaptable") ?: "Guía directo y adaptable"
-                  set(value) {
-                      if (hasProPlusAccess) {
-                          val clean = value.trim().ifEmpty { "Guía directo y adaptable" }
-                          prefs.edit().putString("custom_ai_personality", clean).apply()
-                      }
-                  }
-
-              var proPlusAnimationsEnabled: Boolean
-                  get() = hasProPlusAccess && prefs.getBoolean("pro_plus_anims", true)
-                  set(value) {
-                      if (hasProPlusAccess) {
-                          prefs.edit().putBoolean("pro_plus_anims", value).apply()
-                      }
-                  }
-
-              var isDevModeEnabled: Boolean
-                  get() = hasProAccess && prefs.getBoolean("dev_mode_enabled", false)
-                  set(value) {
-                      if (hasProAccess) {
-                          prefs.edit().putBoolean("dev_mode_enabled", value).apply()
-                      }
-                  }
-
-              var highResAudioPro: Boolean
-                  get() = hasProAccess && prefs.getBoolean("high_res_audio_pro", true)
-                  set(value) {
-                      if (hasProAccess) {
-                          prefs.edit().putBoolean("high_res_audio_pro", value).apply()
-                      }
-                  }
-
-              fun askAi(prompt: String): String {
-                  if (!hasProPlusAccess) {
-                      return "Función exclusiva de Pro+ ($5 USD): activa Pro+ para usar las 3 IA de anime, cambiar personalidades o usar tu IA propia."
-                  }
-                  val cleanPrompt = if (prompt.isBlank()) "tu sesión actual" else prompt.trim()
-                  val tonePrefix = "[Tono: ${personalityTone.title}]"
-
-                  return when (selectedAnimeStyle) {
-                      AnimeStyle.SHONEN ->
-                          "[Shonen • v$appVersionName • Pro+] $tonePrefix ¡A darlo todo! Para \"$cleanPrompt\", sube la intensidad y mantén el ritmo."
-                      AnimeStyle.SLICE_OF_LIFE ->
-                          "[Slice of Life • v$appVersionName • Pro+] $tonePrefix Momento tranquilo: para \"$cleanPrompt\", un ambiente cálido y pausado encaja mejor."
-                      AnimeStyle.CYBERPUNK_SCIFI ->
-                          "[Cyberpunk / Sci-Fi • v$appVersionName • Pro+] $tonePrefix Enlace activo sobre \"$cleanPrompt\": pulsos electrónicos y enfoque preciso."
-                      AnimeStyle.CUSTOM ->
-                          "[$customAiName ($customAiPersonality) • v$appVersionName • Pro+] $tonePrefix Para \"$cleanPrompt\": respuesta adaptada a tu IA personal."
-                  }
-              }
-
-              fun getDeveloperDiagnostics(): String {
-                  if (!hasProAccess) {
-                      return "Modo desarrollador bloqueado: activa Pro ($3 USD) o Pro+ ($5 USD)."
-                  }
-                  return "VER=$appVersionName | DEV=$isDevModeEnabled | TIER=${currentTier.name} (${currentTier.priceText}) | HIRES=$highResAudioPro | STYLE=${selectedAnimeStyle.name} | TONE=${personalityTone.name}"
-              }
-          }
-          EOF
-
-          cat << 'EOF' > "${SRC_ROOT}/res/layout/activity_leb_pro_hub.xml"
-          <?xml version="1.0" encoding="utf-8"?>
-          <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
-              android:id="@+id/scrollProRoot"
-              android:layout_width="match_parent"
-              android:layout_height="match_parent"
-              android:background="#0F1117"
-              android:padding="16dp">
-
-              <LinearLayout
-                  android:layout_width="match_parent"
-                  android:layout_height="wrap_content"
-                  android:orientation="vertical">
-
-                  <TextView
-                      android:id="@+id/tvHubTitle"
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:text="L.E.B-M 1.6-beta • Pro ($3) &amp; Pro+ ($5)"
-                      android:textColor="#FFFFFF"
-                      android:textSize="21sp"
-                      android:textStyle="bold"
-                      android:paddingBottom="6dp" />
-
-                  <TextView
-                      android:id="@+id/tvTierStatusBanner"
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:text="Plan actual: Gratis ($0)"
-                      android:textColor="#90CAF9"
-                      android:textSize="14sp"
-                      android:paddingBottom="10dp" />
-
-                  <TextView
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:text="Cambiar nivel (Gratis $0 / Pro $3 / Pro+ $5):"
-                      android:textColor="#E0E0E0"
-                      android:textStyle="bold"
-                      android:paddingBottom="4dp" />
-
-                  <Spinner
-                      android:id="@+id/spinnerTierSelect"
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:background="#1D2230"
-                      android:padding="8dp"
-                      android:layout_marginBottom="14dp" />
-
-                  <LinearLayout
-                      android:id="@+id/proSectionContainer"
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:background="#181C28"
-                      android:orientation="vertical"
-                      android:padding="14dp"
-                      android:layout_marginBottom="14dp">
-
-                      <TextView
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Opciones Pro ($3 USD) + Modo Desarrollador"
-                          android:textColor="#FFFFFF"
-                          android:textSize="17sp"
-                          android:textStyle="bold"
-                          android:paddingBottom="8dp" />
-
-                      <Switch
-                          android:id="@+id/switchProHighRes"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Perfil de audio Pro avanzado"
-                          android:textColor="#E0E0E0"
-                          android:paddingBottom="10dp" />
-
-                      <Switch
-                          android:id="@+id/switchDevOptions"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Modo desarrollador (Solo Pro / Pro+)"
-                          android:textColor="#4DD0E1" />
-
-                      <TextView
-                          android:id="@+id/tvDevInfo"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text=""
-                          android:textColor="#80DEEA"
-                          android:paddingTop="8dp" />
-                  </LinearLayout>
-
-                  <LinearLayout
-                      android:id="@+id/proPlusSectionContainer"
-                      android:layout_width="match_parent"
-                      android:layout_height="wrap_content"
-                      android:background="#20172C"
-                      android:orientation="vertical"
-                      android:padding="14dp">
-
-                      <TextView
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Exclusivo Pro+ ($5 USD) • 3 IA Anime + IA Propia + Animaciones"
-                          android:textColor="#F3E5F5"
-                          android:textSize="17sp"
-                          android:textStyle="bold"
-                          android:paddingBottom="8dp" />
-
-                      <Switch
-                          android:id="@+id/switchProPlusAnims"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Animaciones exclusivas Pro+"
-                          android:textColor="#E1BEE7"
-                          android:paddingBottom="10dp" />
-
-                      <TextView
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Elegir IA (Shonen / Slice of Life / Cyberpunk Sci-Fi / Mi IA):"
-                          android:textColor="#FFFFFF"
-                          android:textStyle="bold"
-                          android:paddingBottom="4dp" />
-
-                      <Spinner
-                          android:id="@+id/spinnerAnimeStyle"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:background="#2E2140"
-                          android:padding="6dp"
-                          android:layout_marginBottom="10dp" />
-
-                      <TextView
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Personalidad de la IA:"
-                          android:textColor="#FFFFFF"
-                          android:textStyle="bold"
-                          android:paddingBottom="4dp" />
-
-                      <Spinner
-                          android:id="@+id/spinnerAiTone"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:background="#2E2140"
-                          android:padding="6dp"
-                          android:layout_marginBottom="10dp" />
-
-                      <TextView
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Crear / Editar tu propia IA:"
-                          android:textColor="#FFFFFF"
-                          android:textStyle="bold"
-                          android:paddingBottom="4dp" />
-
-                      <EditText
-                          android:id="@+id/etCustomAiName"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:hint="Nombre de tu IA (ej. Nova-1.6)"
-                          android:textColor="#FFFFFF"
-                          android:textColorHint="#B39DDB"
-                          android:paddingBottom="6dp" />
-
-                      <EditText
-                          android:id="@+id/etCustomAiPersonality"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:hint="Personalidad de tu IA (ej. guía directo y adaptable)"
-                          android:textColor="#FFFFFF"
-                          android:textColorHint="#B39DDB"
-                          android:paddingBottom="8dp" />
-
-                      <Button
-                          android:id="@+id/btnSaveCustomAi"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Guardar mi IA personalizada"
-                          android:layout_marginBottom="10dp" />
-
-                      <EditText
-                          android:id="@+id/etAnimePrompt"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:hint="Escribe un mood o actividad para consultar la IA"
-                          android:textColor="#FFFFFF"
-                          android:textColorHint="#B39DDB"
-                          android:paddingBottom="8dp" />
-
-                      <Button
-                          android:id="@+id/btnAskAnimeAi"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Consultar IA (Pro+)" />
-
-                      <TextView
-                          android:id="@+id/tvAnimeResponse"
-                          android:layout_width="match_parent"
-                          android:layout_height="wrap_content"
-                          android:text="Selecciona una IA y escribe algo para probar."
-                          android:textColor="#FFFFFF"
-                          android:paddingTop="10dp" />
-                  </LinearLayout>
-
-              </LinearLayout>
-          </ScrollView>
-          EOF
-
-          cat << 'EOF' > "${SRC_ROOT}/java/com/leb/profeatures/LebProHubActivity.kt"
-          package com.leb.profeatures
-
-          import android.graphics.Color
-          import android.os.Bundle
-          import android.view.View
-          import android.view.animation.AnimationUtils
-          import android.widget.AdapterView
-          import android.widget.ArrayAdapter
-          import android.widget.Button
-          import android.widget.EditText
-          import android.widget.LinearLayout
-          import android.widget.Spinner
-          import android.widget.Switch
-          import android.widget.TextView
-          import androidx.appcompat.app.AppCompatActivity
-
-          class LebProHubActivity : AppCompatActivity() {
-
-              private lateinit var proManager: LebProManager
-
-              override fun onCreate(savedInstanceState: Bundle?) {
-                  super.onCreate(savedInstanceState)
-                  setContentView(
-                      resources.getIdentifier("activity_leb_pro_hub", "layout", packageName)
-                  )
-
-                  proManager = LebProManager(this)
-
-                  val tvStatusBanner = findViewById<TextView>(
-                      resources.getIdentifier("tvTierStatusBanner", "id", packageName)
-                  )
-                  val spinnerTier = findViewById<Spinner>(
-                      resources.getIdentifier("spinnerTierSelect", "id", packageName)
-                  )
-                  val proContainer = findViewById<LinearLayout>(
-                      resources.getIdentifier("proSectionContainer", "id", packageName)
-                  )
-                  val proPlusContainer = findViewById<LinearLayout>(
-                      resources.getIdentifier("proPlusSectionContainer", "id", packageName)
-                  )
-                  val switchHighRes = findViewById<Switch>(
-                      resources.getIdentifier("switchProHighRes", "id", packageName)
-                  )
-                  val switchDev = findViewById<Switch>(
-                      resources.getIdentifier("switchDevOptions", "id", packageName)
-                  )
-                  val tvDevInfo = findViewById<TextView>(
-                      resources.getIdentifier("tvDevInfo", "id", packageName)
-                  )
-                  val switchProPlusAnims = findViewById<Switch>(
-                      resources.getIdentifier("switchProPlusAnims", "id", packageName)
-                  )
-                  val spinnerAnime = findViewById<Spinner>(
-                      resources.getIdentifier("spinnerAnimeStyle", "id", packageName)
-                  )
-                  val spinnerTone = findViewById<Spinner>(
-                      resources.getIdentifier("spinnerAiTone", "id", packageName)
-                  )
-                  val etCustomName = findViewById<EditText>(
-                      resources.getIdentifier("etCustomAiName", "id", packageName)
-                  )
-                  val etCustomPersonality = findViewById<EditText>(
-                      resources.getIdentifier("etCustomAiPersonality", "id", packageName)
-                  )
-                  val btnSaveCustom = findViewById<Button>(
-                      resources.getIdentifier("btnSaveCustomAi", "id", packageName)
-                  )
-                  val etPrompt = findViewById<EditText>(
-                      resources.getIdentifier("etAnimePrompt", "id", packageName)
-                  )
-                  val btnAskAi = findViewById<Button>(
-                      resources.getIdentifier("btnAskAnimeAi", "id", packageName)
-                  )
-                  val tvAiResponse = findViewById<TextView>(
-                      resources.getIdentifier("tvAnimeResponse", "id", packageName)
-                  )
-
-                  val tiers = MembershipTier.values()
-                  spinnerTier.adapter = ArrayAdapter(
-                      this,
-                      android.R.layout.simple_spinner_dropdown_item,
-                      tiers.map { "${it.label} (${it.priceText})" }
-                  )
-                  spinnerTier.setSelection(tiers.indexOf(proManager.currentTier).coerceAtLeast(0))
-
-                  val styles = AnimeStyle.values()
-                  spinnerAnime.adapter = ArrayAdapter(
-                      this,
-                      android.R.layout.simple_spinner_dropdown_item,
-                      styles.map { "${it.displayName} — ${it.modeTag}" }
-                  )
-                  spinnerAnime.setSelection(styles.indexOf(proManager.selectedAnimeStyle).coerceAtLeast(0))
-
-                  val tones = AiPersonalityTone.values()
-                  spinnerTone.adapter = ArrayAdapter(
-                      this,
-                      android.R.layout.simple_spinner_dropdown_item,
-                      tones.map { it.title }
-                  )
-                  spinnerTone.setSelection(tones.indexOf(proManager.personalityTone).coerceAtLeast(0))
-
-                  etCustomName.setText(proManager.customAiName)
-                  etCustomPersonality.setText(proManager.customAiPersonality)
-
-                  fun playProPlusAnim(target: View) {
-                      if (proManager.proPlusAnimationsEnabled) {
-                          val animId = resources.getIdentifier("pro_plus_pulse", "anim", packageName)
-                          if (animId != 0) {
-                              target.startAnimation(AnimationUtils.loadAnimation(this, animId))
-                          }
-                      }
-                  }
-
-                  fun refreshUi(animate: Boolean = false) {
-                      val tier = proManager.currentTier
-                      val hasPro = proManager.hasProAccess
-                      val hasPlus = proManager.hasProPlusAccess
-
-                      tvStatusBanner.text = "Plan actual: ${tier.label} (${tier.priceText}) • v${proManager.appVersionName}"
-                      proContainer.visibility = if (hasPro) View.VISIBLE else View.GONE
-                      proPlusContainer.visibility = if (hasPlus) View.VISIBLE else View.GONE
-
-                      switchHighRes.isChecked = proManager.highResAudioPro
-                      switchDev.isChecked = proManager.isDevModeEnabled
-                      tvDevInfo.visibility = if (hasPro && proManager.isDevModeEnabled) View.VISIBLE else View.GONE
-                      tvDevInfo.text = proManager.getDeveloperDiagnostics()
-
-                      switchProPlusAnims.isChecked = proManager.proPlusAnimationsEnabled
-                      btnAskAi.setBackgroundColor(proManager.selectedAnimeStyle.accentHex.toInt())
-                      btnAskAi.setTextColor(Color.WHITE)
-
-                      if (animate && hasPlus) {
-                          playProPlusAnim(proPlusContainer)
-                      }
-                  }
-
-                  spinnerTier.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                      override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                          proManager.currentTier = tiers[position]
-                          refreshUi(animate = true)
-                      }
-
-                      override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-                  }
-
-                  switchHighRes.setOnCheckedChangeListener { _, checked ->
-                      proManager.highResAudioPro = checked
-                      refreshUi()
-                  }
-
-                  switchDev.setOnCheckedChangeListener { _, checked ->
-                      proManager.isDevModeEnabled = checked
-                      refreshUi()
-                  }
-
-                  switchProPlusAnims.setOnCheckedChangeListener { _, checked ->
-                      proManager.proPlusAnimationsEnabled = checked
-                      refreshUi(animate = checked)
-                  }
-
-                  spinnerAnime.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                      override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                          proManager.selectedAnimeStyle = styles[position]
-                          refreshUi(animate = true)
-                      }
-
-                      override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-                  }
-
-                  spinnerTone.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                      override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                          proManager.personalityTone = tones[position]
-                          refreshUi(animate = true)
-                      }
-
-                      override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-                  }
-
-                  btnSaveCustom.setOnClickListener {
-                      proManager.customAiName = etCustomName.text?.toString().orEmpty()
-                      proManager.customAiPersonality = etCustomPersonality.text?.toString().orEmpty()
-                      tvAiResponse.text = "Guardada IA personalizada: ${proManager.customAiName} (${proManager.customAiPersonality})"
-                      playProPlusAnim(tvAiResponse)
-                  }
-
-                  btnAskAi.setOnClickListener {
-                      tvAiResponse.text = proManager.askAi(etPrompt.text?.toString().orEmpty())
-                      playProPlusAnim(tvAiResponse)
-                  }
-
-                  refreshUi(animate = false)
-              }
-          }
-          EOF
+          if [ ! -d "$PROJECT/app" ]; then
+            echo "::error::No se encontró la carpeta app dentro del proyecto."
+            exit 1
+          fi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: "temurin"
-          java-version: "17"
+          distribution: temurin
+          java-version: '17'
 
-      - name: Install Android command-line tools
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
-          SDK_ROOT="${HOME}/android-sdk"
-          rm -rf "$SDK_ROOT"
-          mkdir -p "$SDK_ROOT/cmdline-tools"
-          curl -fsSL -o /tmp/cmdline-tools.zip \
-            "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
-          unzip -q /tmp/cmdline-tools.zip -d "$SDK_ROOT/cmdline-tools"
-          mv "$SDK_ROOT/cmdline-tools/cmdline-tools" "$SDK_ROOT/cmdline-tools/latest"
-          {
-            echo "ANDROID_HOME=$SDK_ROOT"
-            echo "ANDROID_SDK_ROOT=$SDK_ROOT"
-          } >> "$GITHUB_ENV"
-          {
-            echo "$SDK_ROOT/cmdline-tools/latest/bin"
-            echo "$SDK_ROOT/platform-tools"
-          } >> "$GITHUB_PATH"
-
-      - name: Install SDK packages
-        shell: bash
-        run: |
-          set -euo pipefail
-          yes | sdkmanager --sdk_root="${ANDROID_HOME}" --licenses > /tmp/sdk-licenses.txt || true
-          sdkmanager --sdk_root="${ANDROID_HOME}" \
+          sdkmanager --install \
             "platform-tools" \
             "platforms;android-34" \
             "build-tools;34.0.0"
-          sdkmanager --sdk_root="${ANDROID_HOME}" --list_installed | head -40
+          yes | sdkmanager --licenses >/dev/null || true
 
-      - name: Setup Gradle
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.7"
+          gradle-version: '8.7'
 
       - name: Build debug APK
         shell: bash
         run: |
           set -euo pipefail
-          echo "sdk.dir=${ANDROID_HOME}" > "${PROJECT}/local.properties"
-          cd "${PROJECT}"
-          gradle assembleDebug --no-daemon --stacktrace
+          cd "$PROJECT"
+          printf 'sdk.dir=%s\n' "$ANDROID_HOME" > local.properties
 
-      - name: Collect APK and set target size to 61 MB
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew assembleDebug --no-daemon --stacktrace
+          else
+            gradle assembleDebug --no-daemon --stacktrace
+          fi
+
+      - name: Collect and verify APK
         shell: bash
         run: |
           set -euo pipefail
-          APK=$(find "${PROJECT}" -path "*/outputs/apk/debug/*.apk" | head -n 1)
+
+          APK="$(find "$PROJECT/app/build/outputs/apk" \
+            -type f -name '*.apk' | sort | head -n 1 || true)"
+
           if [ -z "$APK" ]; then
-            echo "No se genero el APK"
-            find "${PROJECT}" -name "*.apk" || true
+            echo "::error::La compilación terminó, pero no se encontró ningún APK."
+            find "$PROJECT" -type f -name '*.apk' || true
             exit 1
           fi
+
           cp "$APK" "L.E.B-M-1.6-beta.apk"
-
-          TARGET_BYTES=$((61 * 1024 * 1024))
-          CURRENT_BYTES=$(stat -c%s "L.E.B-M-1.6-beta.apk")
-          echo "Tamano original APK: ${CURRENT_BYTES} bytes (objetivo: ${TARGET_BYTES} bytes = 61 MB)"
-
-          if [ "$CURRENT_BYTES" -lt "$TARGET_BYTES" ]; then
-            PAD_BYTES=$((TARGET_BYTES - CURRENT_BYTES))
-            dd if=/dev/zero bs=1 count=0 seek="$PAD_BYTES" of=/tmp/leb_16_pad.bin
-            cat /tmp/leb_16_pad.bin >> "L.E.B-M-1.6-beta.apk"
-            rm -f /tmp/leb_16_pad.bin
-          elif [ "$CURRENT_BYTES" -gt "$TARGET_BYTES" ]; then
-            echo "Aviso: el APK ya pesa mas de 61 MB (${CURRENT_BYTES} bytes); se conserva sin recortar para no danarlo."
-          fi
-
+          unzip -t "L.E.B-M-1.6-beta.apk"
+          echo "APK listo:"
           ls -lh "L.E.B-M-1.6-beta.apk"
 
       - name: Upload APK
@@ -772,3 +124,4 @@ jobs:
           name: L.E.B-M-1.6-beta
           path: L.E.B-M-1.6-beta.apk
           if-no-files-found: error
+          retention-days: 14
